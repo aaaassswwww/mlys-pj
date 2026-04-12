@@ -31,6 +31,7 @@ class PipelineSmokeTests(unittest.TestCase):
             self.assertIn("actual_boost_clock_mhz", results)
             self.assertIsInstance(results["dram_latency_cycles"], (int, float))
             self.assertIn("result_quality", evidence)
+            self.assertIn("detectors", evidence)
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 

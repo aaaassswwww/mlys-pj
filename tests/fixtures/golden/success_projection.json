@@ -1,0 +1,42 @@
+{
+  "analysis": {
+    "bottleneck_categories": [
+      "MEMORY_PRESSURE",
+      "HIGH_DRAM_LATENCY"
+    ],
+    "bound_type": "memory_bound",
+    "confidence": 0.55,
+    "confidence_adjusted": 0.45,
+    "confidence_penalty": 0.1,
+    "missing_signals": [
+      "compute_signal_missing",
+      "memory_signal_missing"
+    ]
+  },
+  "evidence": {
+    "detectors": {
+      "finding_count": 1,
+      "ids": [
+        "tool_path_blocking"
+      ],
+      "total_confidence_penalty": 0.1
+    },
+    "run_returncode": 0,
+    "targets": {
+      "actual_boost_clock_mhz": {
+        "fusion_confidence": 0.54,
+        "fusion_method": "single_source",
+        "selected_source": "nvml_sm_clock_median"
+      },
+      "dram_latency_cycles": {
+        "fusion_confidence": null,
+        "fusion_method": null,
+        "selected_source": "microbench_probe"
+      }
+    }
+  },
+  "results": {
+    "actual_boost_clock_mhz": 2500.0,
+    "dram_latency_cycles": 420.0
+  }
+}

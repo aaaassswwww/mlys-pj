@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from profiler_agent.analyzer.service import build_analysis
+from profiler_agent.detectors.service import run_detectors
 from profiler_agent.io.logger import build_logger
 from profiler_agent.io.write_results import write_analysis, write_evidence, write_results
 from profiler_agent.orchestrator.task_planner import build_task_plan
@@ -56,6 +57,7 @@ def execute(spec: TargetSpec, out_dir: Path) -> PipelineOutput:
 
     normalized_results, result_quality = normalize_results_with_specs(results=results, expected_targets=spec.targets)
     evidence["result_quality"] = result_quality
+    evidence["detectors"] = run_detectors(results=normalized_results, evidence=evidence)
     analysis = build_analysis(results=normalized_results, evidence=evidence)
     results_path = write_results(out_dir, normalized_results, spec.targets)
     evidence_path = write_evidence(out_dir, evidence)

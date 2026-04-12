@@ -28,6 +28,7 @@ class ProbeFirstMetricStrategy(GenericMetricStrategy):
                         "best_value": probe.best_value,
                         "median_value": probe.median_value,
                         "std_value": probe.std_value,
+                        "run_values": probe.run_values,
                         "compile_stderr_tail": probe.compile_stderr_tail,
                         "run_stderr_tail": probe.run_stderr_tail,
                     },

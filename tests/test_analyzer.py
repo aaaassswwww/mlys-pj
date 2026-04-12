@@ -27,6 +27,24 @@ class AnalyzerTests(unittest.TestCase):
         analysis = build_analysis(results, evidence)
         self.assertEqual(analysis["bound_type"], "compute_bound")
 
+    def test_detector_penalty_applies_to_adjusted_confidence(self) -> None:
+        results = {
+            "sm_efficiency": 60.0,
+            "dram_utilization": 55.0,
+        }
+        evidence = {
+            "targets": {},
+            "detectors": {
+                "finding_count": 1,
+                "total_confidence_penalty": 0.2,
+                "findings": [{"id": "source_divergence"}],
+            },
+        }
+        analysis = build_analysis(results, evidence)
+        self.assertIn("confidence_adjusted", analysis)
+        self.assertLessEqual(analysis["confidence_adjusted"], analysis["confidence"])
+        self.assertEqual(analysis["confidence_penalty"], 0.2)
+
 
 if __name__ == "__main__":
     unittest.main()

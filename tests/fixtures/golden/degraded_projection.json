@@ -1,0 +1,56 @@
+{
+  "analysis": {
+    "bottleneck_categories": [
+      "INSUFFICIENT_SIGNAL"
+    ],
+    "bound_type": "unknown",
+    "confidence": 0.2,
+    "confidence_adjusted": 0.0,
+    "confidence_penalty": 0.35,
+    "missing_signals": [
+      "compute_signal_missing",
+      "memory_signal_missing"
+    ]
+  },
+  "evidence": {
+    "detectors": {
+      "finding_count": 4,
+      "ids": [
+        "tool_path_blocking",
+        "clock_lock_or_static_state",
+        "resource_mask_suspected",
+        "resource_mask_suspected"
+      ],
+      "total_confidence_penalty": 0.35
+    },
+    "run_returncode": 0,
+    "targets": {
+      "actual_boost_clock_mhz": {
+        "fusion_confidence": 0.54,
+        "fusion_method": "single_source",
+        "selected_source": "nvml_sm_clock_median"
+      },
+      "dram_latency_cycles": {
+        "fusion_confidence": 0.0,
+        "fusion_method": "no_signal_default",
+        "selected_source": "fallback_default"
+      },
+      "l2_cache_capacity_kb": {
+        "fusion_confidence": 0.0,
+        "fusion_method": "no_signal_default",
+        "selected_source": "fallback_default"
+      },
+      "max_shmem_per_block_kb": {
+        "fusion_confidence": 0.0,
+        "fusion_method": "no_signal_default",
+        "selected_source": "fallback_default"
+      }
+    }
+  },
+  "results": {
+    "actual_boost_clock_mhz": 210.0,
+    "dram_latency_cycles": 0.0,
+    "l2_cache_capacity_kb": 0,
+    "max_shmem_per_block_kb": 0.0
+  }
+}

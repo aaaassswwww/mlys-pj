@@ -1,37 +1,46 @@
-# GPU Profiling Agent - Project Handoff Context
+# GPU Profiling Agent - Project Handoff Context (Updated 2026-04-12)
 
 ## 1) Purpose
-Build a target-driven GPU hardware profiling agent for MLSYS course project phase 1.7, with dynamic targets from evaluator input, measurable numeric outputs, and evidence for LLM-based judging.
+Build a target-driven GPU hardware intrinsic profiling agent for MLSYS project phase 1.7.
+The system must:
+- Accept dynamic evaluator targets.
+- Output numeric results.
+- Provide structured evidence for LLM-based judging.
+- Remain robust under environment/tool variations.
 
 ## 2) Official Requirement Summary (Section 1.7)
 
 ### 2.1 1.7.1 Hardware Intrinsic Profiling Objectives
-Agent should probe hardware-intrinsic metrics (not static lookup):
-- Memory latency hierarchy: `l1_latency_cycles`, `l2_latency_cycles`, `dram_latency_cycles`
-- Effective peak bandwidth: shared/global memory bandwidth
-- L2 cache capacity via latency-vs-size cliff
-- Actual boost clock under load
-- Shared memory bank conflict penalty
+Targets include:
+- `l1_latency_cycles`
+- `l2_latency_cycles`
+- `dram_latency_cycles`
+- `shared_peak_bandwidth_gbps`
+- `global_peak_bandwidth_gbps`
+- `l2_cache_capacity_kb`
+- `actual_boost_clock_mhz`
+- `shmem_bank_conflict_penalty_cycles`
+- `max_shmem_per_block_kb` (project-added practical intrinsic signal)
 
 ### 2.2 1.7.2 Submission & Evaluation Workflow
-- Student submits agent system code.
 - Evaluator provides `target_spec.json`.
-- Agent outputs numeric `results.json`.
-- Output compared to server-side ground truth benchmarks.
+- Agent runs profiling and writes:
+  - `results.json` (required numeric output)
+  - `evidence.json`
+  - `analysis.json`
+- Server compares results against ground truth.
 
-### 2.3 1.7.3 Anti-Hacking & Environment Variations
-Environment may be altered to break static/spec lookup:
-- Non-standard frequency lock
-- SM/resource masking
-- API virtualization/interception
-Recommended: multi-strategy fusion (microbench + binary execution + ncu cross-check).
+### 2.3 1.7.3 Anti-Hacking / Environment Variations
+Must handle unstable environments:
+- Frequency lock or static clock behavior
+- Resource masking
+- Tool/API interception or missing tools
+- Non-standard runtime behavior
 
 ### 2.4 1.7.4 LLM-Based Evaluation
-Judge uses:
-- Student output + reasoning/logs
-- Ground truth
-- Experimental evidence
-Therefore explainability/evidence quality is part of score, not just numeric closeness.
+Scoring includes both:
+- Numeric closeness
+- Evidence quality / explainability
 
 ## 3) Current I/O Contract
 
@@ -45,29 +54,40 @@ Therefore explainability/evidence quality is part of score, not just numeric clo
 ```
 
 ### 3.2 Outputs
-- `outputs/results.json` (required; numeric target values only)
-- `outputs/evidence.json` (structured evidence/log)
-- `outputs/analysis.json` (bound/bottleneck analysis)
+- `outputs/results.json`
+- `outputs/evidence.json`
+- `outputs/analysis.json`
 
-## 4) Current Architecture (Implemented)
+If run in multi-agent mode, additional artifacts are generated:
+- `outputs/multi_agent_plan.json`
+- `outputs/multi_agent_trace.json`
 
-### 4.1 Pipeline
-`main -> load spec -> run executable -> per-target strategy -> normalize results -> analysis -> write outputs`
+## 4) Architecture (Current)
 
-### 4.2 Core Modules
+### 4.1 Single-Pipeline Path (Stable Mainline)
+`main(single) -> load spec -> run target binary -> per-target strategy -> normalize -> detectors -> analysis -> write outputs`
+
+Core files:
 - `profiler_agent/main.py`
 - `profiler_agent/orchestrator/pipeline.py`
 - `profiler_agent/target_strategies/*`
-- `profiler_agent/tool_adapters/{microbench,ncu,nvml,binary_runner}.py`
+- `profiler_agent/tool_adapters/*`
+- `profiler_agent/detectors/service.py`
 - `profiler_agent/analyzer/*`
 - `profiler_agent/schema/*`
 
-### 4.3 Strategy System
-- Dynamic strategy lookup via registry by target name.
-- Default fallback strategy exists for unknown targets.
-- Probe-first strategy base implemented for hardware-intrinsic targets.
+### 4.2 Multi-Agent Framework (Integrated, Backward-Compatible)
+`main(multi) -> coordinator -> router -> planner -> executor(tool_execution + pipeline_execution) -> interpreter`
 
-## 5) Implemented Targets in Registry
+Core files:
+- `profiler_agent/multi_agent/coordinator.py`
+- `profiler_agent/multi_agent/router.py`
+- `profiler_agent/multi_agent/planner.py`
+- `profiler_agent/multi_agent/executor.py`
+- `profiler_agent/multi_agent/interpreter.py`
+- `profiler_agent/multi_agent/llm_client.py`
+
+## 5) Implemented Target Strategies
 - `l1_latency_cycles`
 - `l2_latency_cycles`
 - `dram_latency_cycles`
@@ -78,103 +98,177 @@ Therefore explainability/evidence quality is part of score, not just numeric clo
 - `max_shmem_per_block_kb`
 - `shmem_bank_conflict_penalty_cycles`
 
+Unknown targets use generic fallback strategy.
+
 ## 6) Probe System Status
 
-### 6.1 Output Protocol (standardized)
-Probes now emit structured line format:
+### 6.1 Protocol
+Structured probe output:
 `metric=<name> value=<num> samples=<n> median=<num> best=<num> std=<num>`
-Backward compatibility for legacy `<metric>=<value>` still supported.
+Legacy `<metric>=<value>` still supported.
 
-### 6.2 Probe Files Present
-- `probes/l1_latency_cycles/probe.cu`
-- `probes/l2_latency_cycles/probe.cu`
-- `probes/dram_latency_cycles/probe.cu`
-- `probes/shared_peak_bandwidth_gbps/probe.cu`
-- `probes/global_peak_bandwidth_gbps/probe.cu`
-- `probes/l2_cache_capacity_kb/probe.cu`
-- `probes/max_shmem_per_block/probe.cu`
-- `probes/shmem_bank_conflict_penalty_cycles/probe.cu`
+### 6.2 Statistical Rigor (Implemented)
+Microbench now supports:
+- Multi-run sampling (default repeat = 5)
+- Aggregation by median
+- `sample_count`, `best_value`, `std_value`, `run_values`
+- Env override: `PROFILER_AGENT_PROBE_REPEAT` (1-20)
 
-### 6.3 Accuracy Maturity
-- Logic and plumbing are complete.
-- Some probes are still heuristic/first-pass and need further calibration for high-precision evaluation.
+## 7) Fusion, Reliability, and Evidence
 
-## 7) Result Normalization & Quality
+### 7.1 Fusion
+Current fusion method:
+- `robust_weighted_median`
+- Source-level reliability weighting (`ncu`, `microbench`, `nvml`)
+- Outlier handling + confidence output
 
-### 7.1 Metric Specs
-`profiler_agent/schema/metric_specs.py` defines per-target:
-- unit
-- min/max clamp range
-- rounding behavior
-- integer-like behavior (if needed)
+### 7.2 Evidence
+`evidence.json` includes:
+- `run` execution tails / return code
+- Per-target `selected_source`, `candidates`, `candidate_reliability`
+- `fusion` metadata (`method`, `confidence`, retained/dropped/source_reliability)
+- Tool-level execution details
+- `result_quality` summary
+- `detectors` output
 
-### 7.2 Normalization
-Pipeline applies normalization before writing `results.json`.
-Quality report is appended to `evidence.json` as:
-- `result_quality.units`
-- `result_quality.issue_count`
-- `result_quality.issues`
+## 8) Detector Layer (Implemented)
+Explicit anti-hacking / reliability detectors:
+- `source_divergence`
+- `tool_path_blocking`
+- `clock_lock_or_static_state`
+- `resource_mask_suspected`
 
-## 8) Analyzer Layer (Implemented)
-- Bound classification: `compute_bound`, `memory_bound`, `balanced_or_mixed`, `unknown`
-- Outputs confidence, observed metrics, missing signals, bottlenecks/suggestions
-- File: `outputs/analysis.json`
+Detector outputs:
+- `evidence.detectors.findings`
+- `total_confidence_penalty`
+Penalty is applied in analyzer to produce:
+- `confidence_penalty`
+- `confidence_adjusted`
+- `detector_summary`
 
-## 9) Fusion & Evidence
-- Multi-source candidate fusion exists (`robust_median` + outlier handling).
-- Evidence includes tool-level status and parse modes.
-- `ncu` adapter supports metric-aware CSV parsing with fallback modes.
+## 9) Analyzer Layer
+Bound classification:
+- `compute_bound`
+- `memory_bound`
+- `balanced_or_mixed`
+- `unknown`
 
-## 10) Testing Status
-- Test suite currently passes: 17/17.
+Analysis output includes:
+- confidence (+ adjusted confidence after detector penalties)
+- observed metrics and missing signals
+- bottleneck list and suggestions
+
+## 10) Multi-Agent + LLM Integration Status
+
+### 10.1 Executor Tool-Calling (Implemented)
+Executor supports tool stage before pipeline stage:
+- `executor` (run target command)
+- `ncu`
+- `microbench`
+- `nvml`
+- `nsys` (availability/version probe)
+- `torch_profiler` (torch availability/version probe)
+
+Results stored in:
+- `state.outputs.tool_calls`
+
+### 10.2 LLM Interface (Implemented with Fallback)
+LLM client:
+- OpenAI-compatible Chat Completions API
+- Env-configured
+
+Used in:
+- Router (intent decision)
+- Planner (tool selection)
+- Interpreter (summary + next actions)
+
+Fallback behavior:
+- If key missing / API failure / invalid response, rules-based logic is used automatically.
+
+Env vars:
+- `OPENAI_API_KEY` (required to enable)
+- `OPENAI_BASE_URL` (optional, default `https://api.openai.com/v1`)
+- `OPENAI_MODEL` (optional, default `gpt-4o-mini`)
+- `OPENAI_TIMEOUT_S` (optional, default `30`)
+
+## 11) Testing Status
+- Current test suite: **30/30 passing**
 - Includes:
   - schema validation
   - registry mapping
   - pipeline smoke
-  - ncu adapter parsing
-  - microbench parser (structured protocol)
-  - fusion logic
+  - ncu / microbench adapters
+  - fusion reliability behavior
   - analyzer behavior
-  - no-GPU-tools fallback logic via mocks
+  - detector logic
+  - no-GPU-tools fallback
+  - golden fixtures (`success` / `degraded`)
+  - multi-agent framework
+  - main single/multi mode integration
+  - LLM client parsing
+  - multi-agent LLM usage path
 
-## 11) Known Gaps / Risks
-- Real runtime precision depends on availability of `nvcc`/`ncu`.
-- In missing-tool environments, logic falls back safely but may produce low-confidence/default-like outputs.
-- Some probes (especially capacity cliff and bandwidth) need tighter experimental rigor for final scoring quality.
-- Anti-hacking detectors are not yet fully explicit as a dedicated module (partially covered by multi-strategy evidence).
+## 12) Remaining Gaps / Risks
+1. Probe precision calibration still needed for final scoring quality (especially bandwidth/L2 capacity).
+2. `nsys` and `torch_profiler` are integrated at executor-call level but not yet deeply fused into target scoring logic.
+3. Need broader real-workload validation (current ad-hoc runs include synthetic command/probe executable).
+4. Need final report packaging (methodology, evidence examples, error analysis) for submission readiness.
 
-## 12) Recommended Next Priorities
-1. Improve probe statistical rigor (multiple runs, median/std for all).
-2. Add explicit anti-hacking detectors (freq-lock/resource-mask/API inconsistency).
-3. Strengthen confidence scoring with detector outputs.
-4. Add golden-case fixtures for `results/evidence/analysis` schema regression.
+## 13) Recommended Next Priorities
+1. Build calibration runner + benchmark set for per-target parameter tuning.
+2. Integrate `nsys`/`torch_profiler` signals into analysis/fusion where meaningful.
+3. Add real evaluator-like end-to-end scenarios and capture final evidence examples.
+4. Prepare submission report and demo script.
 
-## 13) Quick Commands
-Run pipeline:
+## 14) Quick Commands
+
+Single pipeline mode:
 ```powershell
-python -m profiler_agent.main --spec inputs/target_spec.json --out outputs
+python -m profiler_agent.main --mode single --spec inputs/target_spec.json --out outputs
 ```
 
-Run tests:
+Multi-agent mode:
+```powershell
+python -m profiler_agent.main --mode multi --objective "analyze gpu bottlenecks" --spec inputs/target_spec.json --out outputs
+```
+
+Run full tests:
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-## 14) Machine-Readable Snapshot
+Golden regression only:
+```powershell
+python -m unittest tests.test_golden_fixtures -v
+```
+
+## 15) Machine-Readable Snapshot
 ```yaml
 project: gpu-prof-agent
 phase: "1.7 hardware intrinsic profiling"
+updated_at: "2026-04-12"
 io_contract:
   input: target_spec.json
   required_input_fields: [targets, run]
-  outputs: [results.json, evidence.json, analysis.json]
+  outputs:
+    - results.json
+    - evidence.json
+    - analysis.json
+  multi_agent_outputs:
+    - multi_agent_plan.json
+    - multi_agent_trace.json
 status:
-  pipeline: implemented
+  single_pipeline: implemented
   dynamic_target_dispatch: implemented
   probe_framework: implemented
-  analyzer: implemented
-  normalization: implemented
-  tests: "17/17 passing"
+  probe_multi_run_stats: implemented
+  detector_module: implemented
+  reliability_weighted_fusion: implemented
+  analyzer_confidence_adjustment: implemented
+  multi_agent_framework: implemented
+  llm_client_integration: implemented_with_fallback
+  executor_tool_calling: implemented
+  tests: "30/30 passing"
 targets_registered:
   - l1_latency_cycles
   - l2_latency_cycles
@@ -186,10 +280,12 @@ targets_registered:
   - max_shmem_per_block_kb
   - shmem_bank_conflict_penalty_cycles
 open_risks:
-  - "probe precision still needs calibration for final scoring"
-  - "tool unavailability (ncu/nvcc) lowers practical accuracy"
+  - "probe precision calibration needed for final scoring"
+  - "nsys/torch_profiler not yet deeply fused into scoring logic"
+  - "real-workload validation breadth still limited"
 next_priority:
-  - "probe statistical rigor"
-  - "explicit anti-hacking detector module"
+  - "build calibration runner and benchmark set"
+  - "deepen nsys/torch_profiler integration into analysis/fusion"
+  - "prepare final report and evaluator-like end-to-end runs"
 ```
 

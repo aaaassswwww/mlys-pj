@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import statistics
 import subprocess
 import time
@@ -48,3 +49,47 @@ def sample_sm_clock_mhz(sample_count: int = 5, interval_s: float = 0.15) -> Opti
     if not values:
         return None
     return float(statistics.median(values))
+
+
+def sample_sm_clock_stats(sample_count: int = 7, interval_s: float = 0.12) -> dict[str, float | int | list[float] | None]:
+    if sample_count <= 0:
+        return {
+            "sample_count": 0,
+            "median": None,
+            "std": None,
+            "min": None,
+            "max": None,
+            "range": None,
+            "values": [],
+        }
+
+    values: list[float] = []
+    for idx in range(sample_count):
+        value = _query_current_sm_clock_once()
+        if value is not None and math.isfinite(value):
+            values.append(float(value))
+        if idx != sample_count - 1:
+            time.sleep(interval_s)
+
+    if not values:
+        return {
+            "sample_count": 0,
+            "median": None,
+            "std": None,
+            "min": None,
+            "max": None,
+            "range": None,
+            "values": [],
+        }
+
+    min_value = min(values)
+    max_value = max(values)
+    return {
+        "sample_count": len(values),
+        "median": float(statistics.median(values)),
+        "std": float(statistics.pstdev(values)) if len(values) > 1 else 0.0,
+        "min": float(min_value),
+        "max": float(max_value),
+        "range": float(max_value - min_value),
+        "values": [float(v) for v in values],
+    }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import statistics
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Optional
 
 
 _NUMERIC_RE = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
+_DEFAULT_PROBE_REPEAT = 5
+_MAX_PROBE_REPEAT = 20
 _PROBE_MAP: dict[str, str] = {
     "l1_latency_cycles": "l1_latency_cycles",
     "l2_latency_cycles": "l2_latency_cycles",
@@ -38,6 +41,7 @@ class ProbeResult:
     best_value: Optional[float] = None
     median_value: Optional[float] = None
     std_value: Optional[float] = None
+    run_values: Optional[list[float]] = None
 
 
 def _repo_root() -> Path:
@@ -146,6 +150,31 @@ def _run_probe(binary: Path) -> tuple[int, str, str]:
     return completed.returncode, completed.stdout, completed.stderr
 
 
+def _probe_repeat_count() -> int:
+    raw = os.environ.get("PROFILER_AGENT_PROBE_REPEAT")
+    if raw is None:
+        return _DEFAULT_PROBE_REPEAT
+    value = _extract_last_numeric(raw)
+    if value is None:
+        return _DEFAULT_PROBE_REPEAT
+    return max(1, min(int(value), _MAX_PROBE_REPEAT))
+
+
+def _prefer_lower_is_better(metric_name: str) -> bool:
+    lowered = metric_name.lower()
+    return (
+        "latency" in lowered
+        or "penalty" in lowered
+        or lowered.endswith("_cycles")
+    )
+
+
+def _aggregate_best_value(metric_name: str, values: list[float]) -> float:
+    if _prefer_lower_is_better(metric_name):
+        return min(values)
+    return max(values)
+
+
 def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
     _ = run_cmd
     probe_name = _PROBE_MAP.get(metric_name)
@@ -193,24 +222,67 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             metric_name=metric_name,
         )
 
-    run_rc, run_out, run_err = _run_probe(binary)
-    if run_rc != 0:
+    repeat = _probe_repeat_count()
+    parsed_modes: list[str] = []
+    run_values: list[float] = []
+    run_stds: list[float] = []
+    metric_name_seen: Optional[str] = None
+    run_out = ""
+    run_err = ""
+    run_rc = 0
+
+    for _ in range(repeat):
+        run_rc, run_out, run_err = _run_probe(binary)
+        if run_rc != 0:
+            return ProbeResult(
+                value=None,
+                source="run_failed",
+                compile_returncode=compile_rc,
+                run_returncode=run_rc,
+                compile_stdout_tail=(compile_out or "")[-1000:],
+                compile_stderr_tail=(compile_err or "")[-1000:],
+                run_stdout_tail=(run_out or "")[-1000:],
+                run_stderr_tail=(run_err or "")[-1000:],
+                parsed_from="none",
+                metric_name=metric_name,
+            )
+
+        value, parsed_from, meta = _parse_probe_output(metric_name=metric_name, stdout=run_out or "")
+        parsed_modes.append(parsed_from)
+        if value is not None:
+            run_values.append(float(value))
+        if meta.get("std_value") is not None:
+            run_stds.append(float(meta["std_value"]))
+        if metric_name_seen is None and meta.get("metric_name") is not None:
+            metric_name_seen = str(meta.get("metric_name"))
+
+    if run_values:
+        aggregate_value = float(statistics.median(run_values))
+        aggregate_best = _aggregate_best_value(metric_name=metric_name, values=run_values)
+        aggregate_std = float(statistics.pstdev(run_values)) if len(run_values) > 1 else 0.0
+        parsed_from = f"multi_run_median[{parsed_modes[-1]}]"
         return ProbeResult(
-            value=None,
-            source="run_failed",
+            value=aggregate_value,
+            source="microbench_probe",
             compile_returncode=compile_rc,
             run_returncode=run_rc,
             compile_stdout_tail=(compile_out or "")[-1000:],
             compile_stderr_tail=(compile_err or "")[-1000:],
             run_stdout_tail=(run_out or "")[-1000:],
             run_stderr_tail=(run_err or "")[-1000:],
-            parsed_from="none",
-            metric_name=metric_name,
+            parsed_from=parsed_from,
+            metric_name=metric_name_seen or metric_name,
+            sample_count=len(run_values),
+            best_value=float(aggregate_best),
+            median_value=aggregate_value,
+            std_value=aggregate_std,
+            run_values=[float(v) for v in run_values],
         )
 
-    value, parsed_from, meta = _parse_probe_output(metric_name=metric_name, stdout=run_out or "")
+    # Parse failed across all runs; preserve parser-level hints when available.
+    parsed_from = parsed_modes[-1] if parsed_modes else "none"
     return ProbeResult(
-        value=value,
+        value=None,
         source="microbench_probe",
         compile_returncode=compile_rc,
         run_returncode=run_rc,
@@ -219,11 +291,12 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
         run_stdout_tail=(run_out or "")[-1000:],
         run_stderr_tail=(run_err or "")[-1000:],
         parsed_from=parsed_from,
-        metric_name=str(meta.get("metric_name")) if meta.get("metric_name") is not None else metric_name,
-        sample_count=int(meta["sample_count"]) if "sample_count" in meta else None,
-        best_value=float(meta["best_value"]) if "best_value" in meta else None,
-        median_value=float(meta["median_value"]) if "median_value" in meta else None,
-        std_value=float(meta["std_value"]) if "std_value" in meta else None,
+        metric_name=metric_name_seen or metric_name,
+        sample_count=0,
+        best_value=None,
+        median_value=None,
+        std_value=float(statistics.mean(run_stds)) if run_stds else None,
+        run_values=[],
     )
 
 

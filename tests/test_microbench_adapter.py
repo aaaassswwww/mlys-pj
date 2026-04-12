@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
@@ -32,10 +33,34 @@ class MicrobenchAdapterTests(unittest.TestCase):
         result = measure_metric_with_evidence("dram_latency_cycles", "dummy")
         self.assertEqual(result.source, "microbench_probe")
         self.assertEqual(result.value, 412.0)
-        self.assertEqual(result.parsed_from, "structured_metric_value")
+        self.assertTrue(result.parsed_from.startswith("multi_run_median["))
         self.assertEqual(result.sample_count, 5)
         self.assertEqual(result.best_value, 412.0)
-        self.assertEqual(result.median_value, 415.0)
+        self.assertEqual(result.median_value, 412.0)
+        self.assertEqual(result.std_value, 0.0)
+        self.assertEqual(result.run_values, [412.0] * 5)
+
+    @patch.dict(os.environ, {"PROFILER_AGENT_PROBE_REPEAT": "3"}, clear=False)
+    @patch("profiler_agent.tool_adapters.microbench_adapter._probe_source_path")
+    @patch("profiler_agent.tool_adapters.microbench_adapter._compile_probe")
+    @patch("profiler_agent.tool_adapters.microbench_adapter._run_probe")
+    def test_probe_repeat_env_applies(
+        self,
+        mock_run_probe: unittest.mock.Mock,
+        mock_compile_probe: unittest.mock.Mock,
+        mock_source_path: unittest.mock.Mock,
+    ) -> None:
+        mock_source_path.return_value.exists.return_value = True
+        mock_compile_probe.return_value = (0, "", "")
+        mock_run_probe.return_value = (
+            0,
+            "metric=dram_latency_cycles value=500\n",
+            "",
+        )
+
+        result = measure_metric_with_evidence("dram_latency_cycles", "dummy")
+        self.assertEqual(result.sample_count, 3)
+        self.assertEqual(mock_run_probe.call_count, 3)
 
 
 if __name__ == "__main__":

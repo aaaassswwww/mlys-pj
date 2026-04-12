@@ -20,10 +20,23 @@ class CrossVerifyTests(unittest.TestCase):
                 Candidate(source="nvml", value=600.0),
             ]
         )
-        self.assertEqual(result.method, "robust_median")
+        self.assertEqual(result.method, "robust_weighted_median")
         self.assertAlmostEqual(result.value, 101.0)
         self.assertIn("ncu", result.retained_sources)
         self.assertIn("microbench", result.retained_sources)
+
+    def test_fuse_candidates_respects_reliability_weights(self) -> None:
+        result = fuse_candidates(
+            [
+                Candidate(source="ncu", value=100.0, reliability=0.4),
+                Candidate(source="microbench", value=140.0, reliability=0.15),
+                Candidate(source="nvml", value=101.0, reliability=0.95),
+            ]
+        )
+        self.assertEqual(result.method, "robust_weighted_median")
+        self.assertAlmostEqual(result.value, 101.0)
+        self.assertEqual(result.selected_source, "nvml")
+        self.assertIn("ncu", result.source_reliability)
 
 
 if __name__ == "__main__":
