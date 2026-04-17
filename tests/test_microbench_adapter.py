@@ -62,6 +62,27 @@ class MicrobenchAdapterTests(unittest.TestCase):
         self.assertEqual(result.sample_count, 3)
         self.assertEqual(mock_run_probe.call_count, 3)
 
+    @patch.dict(
+        os.environ,
+        {
+            "PROFILER_AGENT_PROBE_SOURCE_MODE": "llm_generated",
+            "PROFILER_AGENT_DISABLE_STATIC_FALLBACK": "1",
+        },
+        clear=False,
+    )
+    @patch("profiler_agent.tool_adapters.microbench_adapter.ProbeCodeGenerator.is_enabled")
+    def test_disable_static_fallback_returns_llm_generation_failed(
+        self,
+        mock_is_enabled: unittest.mock.Mock,
+    ) -> None:
+        mock_is_enabled.return_value = False
+        result = measure_metric_with_evidence("dram_latency_cycles", "dummy")
+        self.assertEqual(result.source, "llm_generation_failed")
+        self.assertEqual(result.generation_source, "llm_generated_only")
+        self.assertIsInstance(result.generation_trace, list)
+        assert result.generation_trace is not None
+        self.assertTrue(any(item.get("error") == "static_fallback_disabled" for item in result.generation_trace))
+
 
 if __name__ == "__main__":
     unittest.main()

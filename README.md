@@ -28,15 +28,25 @@ python -m profiler_agent.main --mode multi --objective "analyze gpu bottlenecks"
 Optional LLM integration for multi-agent decision-making (OpenAI-compatible Chat Completions API):
 
 ```powershell
-$env:OPENAI_API_KEY="your_api_key"
-$env:OPENAI_MODEL="gpt-4o-mini"
+$env:API_KEY="your_api_key"
+$env:OPENAI_MODEL="gpt-5.4"
 # optional:
 # $env:OPENAI_BASE_URL="https://api.openai.com/v1"
 # $env:OPENAI_TIMEOUT_S="30"
 ```
 
-When `OPENAI_API_KEY` is set, `Router/Planner/Interpreter` will use LLM outputs first
-and fall back to rule-based logic on any API error or invalid response.
+When `API_KEY` is set, LLM is used for:
+- Router/Planner/Interpreter decisions
+- LLM-driven microbenchmark code generation (`PROFILER_AGENT_PROBE_SOURCE_MODE=llm_generated`)
+- LLM-led analyzer reasoning (with rule-based guardrails and fallback)
+Any API error automatically falls back to rule-based logic.
+
+Strict codegen mode (disable static probe fallback):
+```powershell
+$env:PROFILER_AGENT_PROBE_SOURCE_MODE="llm_generated"
+$env:PROFILER_AGENT_DISABLE_STATIC_FALLBACK="1"
+```
+In strict mode, probe generation failures are surfaced as `llm_generation_failed`.
 
 ## Current MVP Status
 

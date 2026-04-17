@@ -31,6 +31,11 @@ class ProbeFirstMetricStrategy(GenericMetricStrategy):
                         "run_values": probe.run_values,
                         "compile_stderr_tail": probe.compile_stderr_tail,
                         "run_stderr_tail": probe.run_stderr_tail,
+                        "source_path": probe.source_path,
+                        "generation_source": probe.generation_source,
+                        "generation_attempts": probe.generation_attempts,
+                        "generation_error": probe.generation_error,
+                        "generation_trace": probe.generation_trace,
                     },
                 },
             )
@@ -43,5 +48,10 @@ class ProbeFirstMetricStrategy(GenericMetricStrategy):
             "compile_returncode": probe.compile_returncode,
             "run_returncode": probe.run_returncode,
             "parsed_from": probe.parsed_from,
+            "source_path": probe.source_path,
+            "generation_source": probe.generation_source,
+            "generation_attempts": probe.generation_attempts,
+            "generation_error": probe.generation_error,
+            "generation_trace": probe.generation_trace,
         }
         return MeasureResult(value=result.value, evidence=evidence)

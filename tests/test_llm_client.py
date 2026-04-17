@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from unittest.mock import patch
 
@@ -23,6 +24,13 @@ class _FakeResponse:
 
 
 class LLMClientTests(unittest.TestCase):
+    @patch.dict(os.environ, {"API_KEY": "k-test", "OPENAI_BASE_URL": "https://api.openai.com/v1"}, clear=False)
+    def test_from_env_uses_api_key_env_var(self) -> None:
+        client = OpenAICompatibleLLMClient.from_env()
+        self.assertIsNotNone(client)
+        assert client is not None
+        self.assertEqual(client.config.api_key, "k-test")
+
     @patch("profiler_agent.multi_agent.llm_client.urllib.request.urlopen")
     def test_complete_json_parses_chat_completion(self, mock_urlopen: unittest.mock.Mock) -> None:
         mock_urlopen.return_value = _FakeResponse(
@@ -54,4 +62,3 @@ class LLMClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

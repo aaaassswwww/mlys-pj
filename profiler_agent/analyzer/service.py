@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from profiler_agent.analyzer.bound_classifier import analyze_bound
+from profiler_agent.analyzer.llm_reasoner import build_llm_analysis
 
 
 def _apply_detector_penalty(analysis: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
@@ -42,6 +43,27 @@ def build_analysis(results: dict[str, float], evidence: dict[str, Any]) -> dict[
                     if isinstance(candidate_value, (int, float)) and not isinstance(candidate_value, bool):
                         metrics[candidate_name] = float(candidate_value)
 
-    analysis = analyze_bound(metrics).to_dict()
-    return _apply_detector_penalty(analysis=analysis, evidence=evidence)
+    baseline = analyze_bound(metrics).to_dict()
+    llm_analysis = build_llm_analysis(results=results, evidence=evidence, baseline_analysis=baseline)
 
+    if llm_analysis is None:
+        analysis = baseline
+        analysis["analysis_source"] = "rules"
+    else:
+        analysis = dict(baseline)
+        analysis["analysis_source"] = "llm"
+        analysis["llm_reasoning_summary"] = llm_analysis.get("llm_reasoning_summary", "")
+        analysis["bound_type"] = llm_analysis.get("bound_type", analysis.get("bound_type"))
+        analysis["confidence"] = float(llm_analysis.get("confidence", analysis.get("confidence", 0.0)))
+        llm_bottlenecks = llm_analysis.get("bottlenecks")
+        if isinstance(llm_bottlenecks, list) and llm_bottlenecks:
+            analysis["bottlenecks"] = llm_bottlenecks
+
+        guardrail_flags: list[str] = []
+        if analysis.get("bound_type") == "unknown" and baseline.get("bound_type") != "unknown":
+            guardrail_flags.append("llm_unknown_vs_rule_signal_present")
+        if float(analysis.get("confidence", 0.0)) > 0.9 and baseline.get("missing_signals"):
+            guardrail_flags.append("llm_high_confidence_with_missing_signals")
+        analysis["rule_guardrail_flags"] = guardrail_flags
+
+    return _apply_detector_penalty(analysis=analysis, evidence=evidence)
