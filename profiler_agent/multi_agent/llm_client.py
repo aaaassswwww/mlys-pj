@@ -28,11 +28,19 @@ class OpenAICompatibleLLMClient:
 
     @classmethod
     def from_env(cls) -> "OpenAICompatibleLLMClient | None":
-        api_key = os.environ.get("API_KEY", "").strip()
+        api_key = os.environ.get("API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
             return None
-        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
-        model = os.environ.get("OPENAI_MODEL", "gpt-5.4").strip()
+        base_url = (
+            os.environ.get("BASE_URL", "").strip()
+            or os.environ.get("OPENAI_BASE_URL", "").strip()
+            or "https://api.openai.com/v1"
+        ).rstrip("/")
+        model = (
+            os.environ.get("BASE_MODEL", "").strip()
+            or os.environ.get("OPENAI_MODEL", "").strip()
+            or "gpt-5.4"
+        )
         timeout = int(os.environ.get("OPENAI_TIMEOUT_S", "30"))
         return cls(OpenAICompatibleConfig(api_key=api_key, base_url=base_url, model=model, timeout_s=timeout))
 

@@ -96,6 +96,20 @@ What this validates:
 - `degraded` case: expected fallback, detector findings, and confidence penalties when tools fail.
 - evidence projection stability: selected source and fusion metadata for each target.
 
+## Pre-Submit Compatibility Check
+
+Run static checks for evaluator contract:
+
+```powershell
+python scripts/pre_submit_check.py --workspace .
+```
+
+Optional (container-like environment only): execute `run.sh` and validate single `output.*` artifact.
+
+```powershell
+python scripts/pre_submit_check.py --workspace /workspace --run-container-check
+```
+
 ## Extending
 
 1. Add a strategy under `profiler_agent/target_strategies/`.

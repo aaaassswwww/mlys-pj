@@ -24,12 +24,39 @@ class _FakeResponse:
 
 
 class LLMClientTests(unittest.TestCase):
-    @patch.dict(os.environ, {"API_KEY": "k-test", "OPENAI_BASE_URL": "https://api.openai.com/v1"}, clear=False)
-    def test_from_env_uses_api_key_env_var(self) -> None:
+    @patch.dict(
+        os.environ,
+        {
+            "API_KEY": "k1",
+            "BASE_URL": "https://example.com/v1",
+            "BASE_MODEL": "gpt-5.4",
+        },
+        clear=True,
+    )
+    def test_from_env_prefers_submission_variable_names(self) -> None:
         client = OpenAICompatibleLLMClient.from_env()
         self.assertIsNotNone(client)
         assert client is not None
-        self.assertEqual(client.config.api_key, "k-test")
+        self.assertEqual(client.config.api_key, "k1")
+        self.assertEqual(client.config.base_url, "https://example.com/v1")
+        self.assertEqual(client.config.model, "gpt-5.4")
+
+    @patch.dict(
+        os.environ,
+        {
+            "OPENAI_API_KEY": "k2",
+            "OPENAI_BASE_URL": "https://fallback.example/v1",
+            "OPENAI_MODEL": "gpt-4o-mini",
+        },
+        clear=True,
+    )
+    def test_from_env_falls_back_to_openai_variable_names(self) -> None:
+        client = OpenAICompatibleLLMClient.from_env()
+        self.assertIsNotNone(client)
+        assert client is not None
+        self.assertEqual(client.config.api_key, "k2")
+        self.assertEqual(client.config.base_url, "https://fallback.example/v1")
+        self.assertEqual(client.config.model, "gpt-4o-mini")
 
     @patch("profiler_agent.multi_agent.llm_client.urllib.request.urlopen")
     def test_complete_json_parses_chat_completion(self, mock_urlopen: unittest.mock.Mock) -> None:
