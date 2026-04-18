@@ -35,6 +35,24 @@ class PipelineSmokeTests(unittest.TestCase):
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
+    def test_execute_without_run_still_writes_outputs(self) -> None:
+        spec = TargetSpec(
+            targets=["dram_latency_cycles"],
+            run="",
+        )
+        out_dir = Path("tests/.tmp") / f"smoke_norun_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            output = execute(spec, out_dir)
+
+            self.assertTrue(output.results_path.exists())
+            evidence = json.loads(output.evidence_path.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["run"]["command"], "")
+            self.assertEqual(evidence["run"]["returncode"], 0)
+            self.assertEqual(evidence["run"]["stderr_tail"], "run_skipped_no_command")
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,7 +26,10 @@ class PipelineOutput:
 
 def execute(spec: TargetSpec, out_dir: Path) -> PipelineOutput:
     logger = build_logger()
-    logger.info("Running target executable once: %s", spec.run)
+    if spec.run:
+        logger.info("Running target executable once: %s", spec.run)
+    else:
+        logger.info("No run command provided; skipping workload execution")
     run_result = run_executable(spec.run)
 
     registry = StrategyRegistry()

@@ -14,6 +14,13 @@ class RunResult:
 
 
 def run_executable(run_cmd: str, timeout_s: int = 120) -> RunResult:
+    if not (run_cmd or "").strip():
+        return RunResult(
+            command="",
+            returncode=0,
+            stdout="",
+            stderr="run_skipped_no_command",
+        )
     try:
         # Prefer POSIX-style splitting so quoted payloads (e.g. python -c "...") are unwrapped.
         argv = shlex.split(run_cmd, posix=True)

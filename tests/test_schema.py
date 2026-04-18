@@ -16,9 +16,10 @@ class TargetSpecSchemaTests(unittest.TestCase):
         self.assertEqual(spec.targets, ["dram_latency_cycles", "actual_boost_clock_mhz"])
         self.assertEqual(spec.run, "demo_binary")
 
-    def test_validate_target_spec_missing_run(self) -> None:
-        with self.assertRaises(ValueError):
-            validate_target_spec({"targets": ["dram_latency_cycles"]})
+    def test_validate_target_spec_missing_run_defaults_to_empty(self) -> None:
+        spec = validate_target_spec({"targets": ["dram_latency_cycles"]})
+        self.assertEqual(spec.targets, ["dram_latency_cycles"])
+        self.assertEqual(spec.run, "")
 
 
 if __name__ == "__main__":

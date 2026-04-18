@@ -44,6 +44,34 @@ class MainModeTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         mock_execute.assert_called_once()
 
+    @patch("profiler_agent.main.execute")
+    @patch("profiler_agent.main.load_target_spec")
+    @patch("profiler_agent.main.parse_args")
+    def test_single_mode_allows_missing_run(
+        self,
+        mock_parse_args: unittest.mock.Mock,
+        mock_load_spec: unittest.mock.Mock,
+        mock_execute: unittest.mock.Mock,
+    ) -> None:
+        out_dir = Path("tests/.tmp") / f"main_single_norun_{uuid4().hex}"
+        mock_parse_args.return_value = argparse.Namespace(
+            spec=Path("inputs/target_spec.json"),
+            out=out_dir,
+            mode="single",
+            objective="",
+        )
+        mock_load_spec.return_value = TargetSpec(targets=["dram_latency_cycles"], run="")
+        mock_execute.return_value = PipelineOutput(
+            results_path=out_dir / "results.json",
+            evidence_path=out_dir / "evidence.json",
+            analysis_path=out_dir / "analysis.json",
+            run_result=RunResult(command="", returncode=0, stdout="", stderr="run_skipped_no_command"),
+        )
+
+        rc = main()
+        self.assertEqual(rc, 0)
+        mock_execute.assert_called_once()
+
     @patch("profiler_agent.main.MultiAgentCoordinator")
     @patch("profiler_agent.main.load_target_spec")
     @patch("profiler_agent.main.parse_args")
@@ -104,4 +132,3 @@ class MainModeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

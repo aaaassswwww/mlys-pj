@@ -8,7 +8,7 @@ from typing import Any
 @dataclass(frozen=True)
 class MultiAgentRequest:
     targets: list[str]
-    run: str
+    run: str = ""
     objective: str = ""
     out_dir: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -52,4 +52,3 @@ class MultiAgentResult:
     outputs: dict[str, Any]
     trace: list[AgentMessage]
     plan: ExecutionPlan
-

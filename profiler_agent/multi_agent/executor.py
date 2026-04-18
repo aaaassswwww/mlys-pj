@@ -36,6 +36,15 @@ class ExecutorAgent:
     name = "executor_agent"
 
     def _run_tool_executor(self, run_cmd: str) -> dict[str, Any]:
+        if not (run_cmd or "").strip():
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "run_command_missing",
+                "returncode": 0,
+                "stdout_tail": "",
+                "stderr_tail": "run_skipped_no_command",
+            }
         run = run_executable(run_cmd, timeout_s=30)
         return {
             "ok": run.returncode == 0,
@@ -152,4 +161,3 @@ class ExecutorAgent:
                 content={"step_id": step.id, "action": step.action},
             )
         return self.execute_pipeline(state=state, out_dir=out_dir)
-
