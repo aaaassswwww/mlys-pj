@@ -38,7 +38,9 @@ class ProbeResult:
     compile_stderr_tail: str
     run_stdout_tail: str
     run_stderr_tail: str
-    parsed_from: str
+    compile_command: Optional[list[str] | str] = None
+    run_command: Optional[list[str] | str] = None
+    parsed_from: str = "none"
     metric_name: Optional[str] = None
     sample_count: Optional[int] = None
     best_value: Optional[float] = None
@@ -144,10 +146,26 @@ def _parse_probe_output(metric_name: str, stdout: str) -> tuple[Optional[float],
     return None, "none", {}
 
 
-def _compile_probe(source: Path, binary: Path) -> tuple[int, str, str]:
+def _normalize_compile_result(result: tuple[object, ...], fallback_command: list[str] | None = None) -> tuple[int, str, str, list[str]]:
+    if len(result) >= 4:
+        return int(result[0]), str(result[1]), str(result[2]), list(result[3]) if isinstance(result[3], list) else (
+            fallback_command or []
+        )
+    return int(result[0]), str(result[1]), str(result[2]), fallback_command or []
+
+
+def _normalize_run_result(result: tuple[object, ...], fallback_command: list[str] | None = None) -> tuple[int, str, str, list[str]]:
+    if len(result) >= 4:
+        return int(result[0]), str(result[1]), str(result[2]), list(result[3]) if isinstance(result[3], list) else (
+            fallback_command or []
+        )
+    return int(result[0]), str(result[1]), str(result[2]), fallback_command or []
+
+
+def _compile_probe(source: Path, binary: Path) -> tuple[int, str, str, list[str]]:
     nvcc = shutil.which("nvcc")
     if not nvcc:
-        return 127, "", "nvcc_not_found"
+        return 127, "", "nvcc_not_found", []
 
     binary.parent.mkdir(parents=True, exist_ok=True)
     argv = [
@@ -155,25 +173,25 @@ def _compile_probe(source: Path, binary: Path) -> tuple[int, str, str]:
         str(source),
         "-O3",
         "-std=c++14",
-        "-Xcompiler",
-        "/wd4819",
         "-o",
         str(binary),
     ]
+    if os.name == "nt":
+        argv[4:4] = ["-Xcompiler", "/wd4819"]
     completed = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=240)
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
     # nvcc on Windows may emit fatal host-compiler errors to stdout.
     if completed.returncode != 0 and not stderr.strip() and stdout.strip():
         stderr = stdout
-    return completed.returncode, stdout, stderr
+    return completed.returncode, stdout, stderr, argv
 
 
-def _run_probe(binary: Path) -> tuple[int, str, str]:
+def _run_probe(binary: Path) -> tuple[int, str, str, list[str]]:
     if not binary.exists():
-        return 127, "", "probe_binary_not_found"
+        return 127, "", "probe_binary_not_found", [str(binary)]
     completed = subprocess.run([str(binary)], capture_output=True, text=True, check=False, timeout=180)
-    return completed.returncode, completed.stdout, completed.stderr
+    return completed.returncode, completed.stdout, completed.stderr, [str(binary)]
 
 
 def _probe_repeat_count() -> int:
@@ -311,6 +329,8 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             compile_stderr_tail="",
             run_stdout_tail="",
             run_stderr_tail="",
+            compile_command=None,
+            run_command=None,
             parsed_from="none",
             metric_name=metric_name,
             generation_source=source_type,
@@ -334,6 +354,8 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             compile_stderr_tail=f"missing_source:{source}",
             run_stdout_tail="",
             run_stderr_tail="",
+            compile_command=None,
+            run_command=None,
             parsed_from="none",
             metric_name=metric_name,
             source_path=str(source),
@@ -343,7 +365,10 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             generation_trace=generation_trace,
         )
 
-    compile_rc, compile_out, compile_err = _compile_probe(source, binary)
+    compile_rc, compile_out, compile_err, compile_argv = _normalize_compile_result(
+        _compile_probe(source, binary),
+        fallback_command=["nvcc", str(source), "-o", str(binary)],
+    )
     # If LLM-generated source fails to compile, attempt one or more repairs.
     if compile_rc != 0 and source_type == "llm_generated":
         generator = ProbeCodeGenerator()
@@ -361,7 +386,10 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
                 generation_error = fix.error
                 continue
             source = fix.source_path
-            compile_rc, compile_out, compile_err = _compile_probe(source, binary)
+            compile_rc, compile_out, compile_err, compile_argv = _normalize_compile_result(
+                _compile_probe(source, binary),
+                fallback_command=["nvcc", str(source), "-o", str(binary)],
+            )
             if compile_rc == 0:
                 generation_error = ""
                 break
@@ -381,6 +409,8 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             compile_stderr_tail=(compile_err or "")[-1000:],
             run_stdout_tail="",
             run_stderr_tail="",
+            compile_command=compile_argv,
+            run_command=None,
             parsed_from="none",
             metric_name=metric_name,
             source_path=str(source),
@@ -398,9 +428,13 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
     run_out = ""
     run_err = ""
     run_rc = 0
+    run_argv: list[str] | None = None
 
     for _ in range(repeat):
-        run_rc, run_out, run_err = _run_probe(binary)
+        run_rc, run_out, run_err, run_argv = _normalize_run_result(
+            _run_probe(binary),
+            fallback_command=[str(binary)],
+        )
         if run_rc != 0:
             return ProbeResult(
                 value=None,
@@ -411,6 +445,8 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
                 compile_stderr_tail=(compile_err or "")[-1000:],
                 run_stdout_tail=(run_out or "")[-1000:],
                 run_stderr_tail=(run_err or "")[-1000:],
+                compile_command=compile_argv,
+                run_command=run_argv,
                 parsed_from="none",
                 metric_name=metric_name,
                 source_path=str(source),
@@ -443,6 +479,8 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             compile_stderr_tail=(compile_err or "")[-1000:],
             run_stdout_tail=(run_out or "")[-1000:],
             run_stderr_tail=(run_err or "")[-1000:],
+            compile_command=compile_argv,
+            run_command=run_argv,
             parsed_from=parsed_from,
             metric_name=metric_name_seen or metric_name,
             sample_count=len(run_values),
@@ -468,6 +506,8 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
         compile_stderr_tail=(compile_err or "")[-1000:],
         run_stdout_tail=(run_out or "")[-1000:],
         run_stderr_tail=(run_err or "")[-1000:],
+        compile_command=compile_argv,
+        run_command=run_argv,
         parsed_from=parsed_from,
         metric_name=metric_name_seen or metric_name,
         sample_count=0,

@@ -36,6 +36,8 @@ def _mk_probe(
         compile_stderr_tail="" if ok else "nvcc_not_found",
         run_stdout_tail="",
         run_stderr_tail="",
+        compile_command=None,
+        run_command=None,
         parsed_from="multi_run_median[structured_metric_value]" if value is not None else "none",
         metric_name=None,
         sample_count=sample_count,
@@ -140,6 +142,7 @@ class GoldenFixtureTests(unittest.TestCase):
                 source="ncu_unavailable",
                 returncode=127,
                 parse_mode="none",
+                command=["ncu", "--metrics", metric_name],
                 stdout_tail="",
                 stderr_tail="ncu_not_found_or_timeout",
             )
@@ -188,4 +191,3 @@ class GoldenFixtureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

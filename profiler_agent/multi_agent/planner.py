@@ -5,13 +5,29 @@ from typing import Any
 
 from profiler_agent.multi_agent.llm_client import LLMClient
 from profiler_agent.multi_agent.models import AgentMessage, ExecutionPlan, ExecutionStep, MultiAgentState
+from profiler_agent.target_semantics import classify_target
 
 
 def _select_tools(targets: list[str]) -> list[str]:
-    tools = {"executor", "ncu", "microbench"}
+    tools = {"executor"}
+    semantics = [classify_target(target) for target in targets]
+    if any(item.semantic_class == "device_attribute" for item in semantics):
+        tools.add("device_attribute")
+    if any(item.semantic_class in {"ncu_counter", "runtime_throughput_counter"} for item in semantics):
+        tools.add("ncu")
+    if any(item.semantic_class in {"intrinsic_microbench", "unknown"} for item in semantics):
+        tools.add("microbench")
     if "actual_boost_clock_mhz" in targets:
         tools.add("nvml")
     return sorted(tools)
+
+
+def _pick_focus_target(targets: list[str], semantic_classes: set[str]) -> str | None:
+    for target in targets:
+        semantic = classify_target(target)
+        if semantic.semantic_class in semantic_classes:
+            return target
+    return targets[0] if targets else None
 
 
 class PlannerAgent:
@@ -36,6 +52,24 @@ class PlannerAgent:
 
     def build_plan(self, state: MultiAgentState) -> tuple[ExecutionPlan, AgentMessage]:
         tools = _select_tools(state.request.targets)
+        directive = state.round_directive if isinstance(state.round_directive, dict) else {}
+        forced_tools = [str(item) for item in directive.get("forced_tools", []) if str(item).strip()]
+        for item in forced_tools:
+            tools.append(item)
+        tools = sorted(dict.fromkeys(tools))
+        tool_targets: dict[str, str] = {}
+        if "ncu" in tools:
+            focus = _pick_focus_target(state.request.targets, {"ncu_counter", "runtime_throughput_counter"})
+            if focus is not None:
+                tool_targets["ncu"] = focus
+        if "microbench" in tools:
+            focus = _pick_focus_target(state.request.targets, {"intrinsic_microbench", "unknown"})
+            if focus is not None:
+                tool_targets["microbench"] = focus
+        if "device_attribute" in tools:
+            focus = _pick_focus_target(state.request.targets, {"device_attribute"})
+            if focus is not None:
+                tool_targets["device_attribute"] = focus
         source = "rules"
         fallback_reason = "llm_not_enabled"
         llm_attempted = False
@@ -50,6 +84,9 @@ class PlannerAgent:
                     "intent": state.routed_intent,
                     "targets": state.request.targets,
                     "objective": state.request.objective,
+                    "previous_errors": state.persistent_state.error_history[-3:],
+                    "previous_selected_tools": state.persistent_state.selected_tools_history[-3:],
+                    "round_directive": directive,
                 },
                 ensure_ascii=True,
             )
@@ -58,7 +95,7 @@ class PlannerAgent:
                 fallback_reason = "llm_no_response_or_invalid_json"
             else:
                 parsed = set(self._parse_selected_tools(llm_json))
-                allow = {"executor", "ncu", "microbench", "nvml", "nsys", "torch_profiler"}
+                allow = {"executor", "device_attribute", "ncu", "microbench", "nvml", "nsys", "torch_profiler"}
                 selected = sorted(parsed.intersection(allow))
                 if parsed and "executor" not in selected:
                     selected.insert(0, "executor")
@@ -88,7 +125,13 @@ class PlannerAgent:
                 id="tool_execution",
                 owner="executor_agent",
                 action="run_tools",
-                payload={"tools": tools, "targets": state.request.targets, "run": state.request.run},
+                payload={
+                    "tools": tools,
+                    "targets": state.request.targets,
+                    "run": state.request.run,
+                    "tool_targets": tool_targets,
+                    "round_directive": directive,
+                },
             ),
             ExecutionStep(
                 id="profiling_execution",
@@ -121,6 +164,9 @@ class PlannerAgent:
                 "step_ids": [step.id for step in plan.steps],
                 "llm_attempted": llm_attempted,
                 "planning_fallback_reason": fallback_reason if source == "rules" else "",
+                "loaded_iteration": state.persistent_state.iteration,
+                "round_directive": directive,
+                "tool_targets": tool_targets,
             },
         )
         return plan, message

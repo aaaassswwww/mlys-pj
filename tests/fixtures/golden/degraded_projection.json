@@ -5,8 +5,8 @@
     ],
     "bound_type": "unknown",
     "confidence": 0.2,
-    "confidence_adjusted": 0.0,
-    "confidence_penalty": 0.35,
+    "confidence_adjusted": 0.05,
+    "confidence_penalty": 0.15,
     "missing_signals": [
       "compute_signal_missing",
       "memory_signal_missing"
@@ -14,14 +14,13 @@
   },
   "evidence": {
     "detectors": {
-      "finding_count": 4,
+      "finding_count": 3,
       "ids": [
-        "tool_path_blocking",
         "clock_lock_or_static_state",
         "resource_mask_suspected",
         "resource_mask_suspected"
       ],
-      "total_confidence_penalty": 0.35
+      "total_confidence_penalty": 0.15
     },
     "run_returncode": 0,
     "targets": {

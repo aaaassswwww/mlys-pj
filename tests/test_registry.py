@@ -16,6 +16,11 @@ class RegistryTests(unittest.TestCase):
         strategy = registry.get("unknown_metric")
         self.assertEqual(strategy.name, "generic_metric")
 
+    def test_device_attribute_target_uses_dedicated_strategy(self) -> None:
+        registry = StrategyRegistry()
+        strategy = registry.get("device__attribute_max_gpu_frequency_khz")
+        self.assertEqual(strategy.name, "device_attribute_strategy")
+
     def test_new_hardware_intrinsic_targets_are_registered(self) -> None:
         registry = StrategyRegistry()
         self.assertEqual(registry.get("l1_latency_cycles").name, "l1_latency_cycles_strategy")

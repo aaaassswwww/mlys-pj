@@ -107,6 +107,7 @@ class MicrobenchAdapterTests(unittest.TestCase):
         self.assertEqual(result.source, "compile_failed")
         self.assertIn("__clock64", result.compile_stderr_tail)
         self.assertEqual(result.compile_returncode, 1)
+        self.assertIsInstance(result.compile_command, list)
 
 
 if __name__ == "__main__":

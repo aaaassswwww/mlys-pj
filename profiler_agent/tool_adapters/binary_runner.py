@@ -27,13 +27,21 @@ def run_executable(run_cmd: str, timeout_s: int = 120) -> RunResult:
     except ValueError:
         # Fallback for malformed input that still may run with legacy behavior.
         argv = shlex.split(run_cmd, posix=False)
-    completed = subprocess.run(
-        argv,
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except FileNotFoundError:
+        return RunResult(
+            command=run_cmd,
+            returncode=127,
+            stdout="",
+            stderr=f"required_command_not_found:{argv[0] if argv else '<empty>'}",
+        )
     return RunResult(
         command=run_cmd,
         returncode=completed.returncode,

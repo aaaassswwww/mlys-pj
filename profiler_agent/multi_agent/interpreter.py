@@ -67,7 +67,12 @@ class InterpreterAgent:
                 "'explanation' (string) and 'risk_level' (low|medium|high)."
             )
             user_prompt = json.dumps(
-                {"analysis": analysis_obj, "objective": state.request.objective, "targets": state.request.targets},
+                {
+                    "analysis": analysis_obj,
+                    "objective": state.request.objective,
+                    "targets": state.request.targets,
+                    "previous_errors": state.persistent_state.error_history[-3:],
+                },
                 ensure_ascii=True,
             )
             llm_json = self.llm_client.complete_json(system_prompt=system_prompt, user_prompt=user_prompt)
@@ -116,6 +121,8 @@ class InterpreterAgent:
                     "interpretation": interpretation,
                     "objective": state.request.objective,
                     "targets": state.request.targets,
+                    "previous_next_actions": state.persistent_state.recommended_next_actions[-3:],
+                    "previous_errors": state.persistent_state.error_history[-3:],
                 },
                 ensure_ascii=True,
             )

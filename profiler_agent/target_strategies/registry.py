@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from profiler_agent.target_strategies.actual_boost_clock import ActualBoostClockStrategy
+from profiler_agent.target_semantics import TargetSemanticInfo, classify_target
 from profiler_agent.target_strategies.base import TargetStrategy
+from profiler_agent.target_strategies.device_attributes import DeviceAttributeStrategy
 from profiler_agent.target_strategies.dram_latency import DramLatencyCyclesStrategy
 from profiler_agent.target_strategies.global_peak_bandwidth import GlobalPeakBandwidthStrategy
 from profiler_agent.target_strategies.generic import GenericMetricStrategy
@@ -28,6 +30,9 @@ class StrategyRegistry:
         }
         self._default = GenericMetricStrategy
 
-    def get(self, target: str) -> TargetStrategy:
+    def get(self, target: str, semantic: TargetSemanticInfo | None = None) -> TargetStrategy:
+        semantic = semantic or classify_target(target)
         cls = self._strategies.get(target, self._default)
+        if target not in self._strategies and semantic.semantic_class == "device_attribute":
+            cls = DeviceAttributeStrategy
         return cls()

@@ -20,6 +20,7 @@ class NcuAdapterTests(unittest.TestCase):
         result = query_metric_with_evidence("dram_latency_cycles", "cmd /c echo x")
         self.assertEqual(result.parse_mode, "csv_metric_row")
         self.assertEqual(result.value, 441.5)
+        self.assertIn("ncu", result.command[0])
 
     @patch("profiler_agent.tool_adapters.ncu_adapter.subprocess.run")
     def test_failed_ncu_returns_none_value(self, mock_run: unittest.mock.Mock) -> None:
@@ -29,6 +30,12 @@ class NcuAdapterTests(unittest.TestCase):
         result = query_metric_with_evidence("dram_latency_cycles", "cmd /c echo x")
         self.assertIsNone(result.value)
         self.assertEqual(result.source, "ncu_failed")
+
+    def test_missing_run_marks_workload_missing(self) -> None:
+        result = query_metric_with_evidence("dram__bytes_read.sum.per_second", "")
+        self.assertIsNone(result.value)
+        self.assertEqual(result.source, "workload_run_missing")
+        self.assertEqual(result.stderr_tail, "run_skipped_no_command")
 
 
 if __name__ == "__main__":

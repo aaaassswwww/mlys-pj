@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from profiler_agent.target_semantics import TargetSemanticInfo
+
 
 @dataclass
 class MeasureContext:
@@ -11,6 +13,7 @@ class MeasureContext:
     run_returncode: int | None = None
     run_stdout: str | None = None
     run_stderr: str | None = None
+    target_semantic: TargetSemanticInfo | None = None
 
 
 @dataclass(frozen=True)

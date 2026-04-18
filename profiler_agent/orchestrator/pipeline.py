@@ -11,6 +11,7 @@ from profiler_agent.io.write_results import write_analysis, write_evidence, writ
 from profiler_agent.orchestrator.task_planner import build_task_plan
 from profiler_agent.schema.result_schema import normalize_results_with_specs
 from profiler_agent.schema.target_spec_schema import TargetSpec
+from profiler_agent.target_semantics import classify_target
 from profiler_agent.target_strategies.base import MeasureContext
 from profiler_agent.target_strategies.registry import StrategyRegistry
 from profiler_agent.tool_adapters.binary_runner import RunResult, run_executable
@@ -45,7 +46,8 @@ def execute(spec: TargetSpec, out_dir: Path) -> PipelineOutput:
     }
 
     for target in build_task_plan(spec.targets):
-        strategy = registry.get(target)
+        semantic = classify_target(target)
+        strategy = registry.get(target, semantic=semantic)
         logger.info("Measuring target '%s' using strategy '%s'", target, strategy.name)
         ctx = MeasureContext(
             target=target,
@@ -53,10 +55,13 @@ def execute(spec: TargetSpec, out_dir: Path) -> PipelineOutput:
             run_returncode=run_result.returncode,
             run_stdout=run_result.stdout,
             run_stderr=run_result.stderr,
+            target_semantic=semantic,
         )
         measurement = strategy.measure(ctx)
         results[target] = float(measurement.value)
-        evidence["targets"][target] = measurement.evidence
+        target_evidence = dict(measurement.evidence)
+        target_evidence.setdefault("semantic", semantic.to_evidence())
+        evidence["targets"][target] = target_evidence
 
     normalized_results, result_quality = normalize_results_with_specs(results=results, expected_targets=spec.targets)
     evidence["result_quality"] = result_quality

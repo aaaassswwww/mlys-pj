@@ -18,8 +18,9 @@ class NcuQueryResult:
     source: str
     returncode: int
     parse_mode: str
-    stdout_tail: str
-    stderr_tail: str
+    command: list[str] | None = None
+    stdout_tail: str = ""
+    stderr_tail: str = ""
 
 
 def _extract_last_numeric(text: str) -> Optional[float]:
@@ -71,6 +72,16 @@ def _parse_ncu_csv(metric_name: str, stdout: str) -> tuple[Optional[float], str]
 
 
 def query_metric_with_evidence(metric_name: str, run_cmd: str) -> NcuQueryResult:
+    if not (run_cmd or "").strip():
+        return NcuQueryResult(
+            value=None,
+            source="workload_run_missing",
+            returncode=0,
+            parse_mode="none",
+            command=[],
+            stdout_tail="",
+            stderr_tail="run_skipped_no_command",
+        )
     argv = [
         "ncu",
         "--metrics",
@@ -89,6 +100,7 @@ def query_metric_with_evidence(metric_name: str, run_cmd: str) -> NcuQueryResult
             source="ncu_unavailable",
             returncode=127,
             parse_mode="none",
+            command=argv,
             stdout_tail="",
             stderr_tail="ncu_not_found_or_timeout",
         )
@@ -99,6 +111,7 @@ def query_metric_with_evidence(metric_name: str, run_cmd: str) -> NcuQueryResult
             source="ncu_failed",
             returncode=completed.returncode,
             parse_mode="none",
+            command=argv,
             stdout_tail=(completed.stdout or "")[-1000:],
             stderr_tail=(completed.stderr or "")[-1000:],
         )
@@ -109,6 +122,7 @@ def query_metric_with_evidence(metric_name: str, run_cmd: str) -> NcuQueryResult
         source="ncu_csv",
         returncode=completed.returncode,
         parse_mode=parse_mode,
+        command=argv,
         stdout_tail=(completed.stdout or "")[-1000:],
         stderr_tail=(completed.stderr or "")[-1000:],
     )

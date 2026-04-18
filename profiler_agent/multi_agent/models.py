@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from profiler_agent.agent_state import AgentStateRecord
+
 
 @dataclass(frozen=True)
 class MultiAgentRequest:
@@ -37,6 +39,19 @@ class ExecutionPlan:
     steps: list[ExecutionStep]
 
 
+@dataclass(frozen=True)
+class ExecutionStageResult:
+    stage: str
+    ok: bool
+    command: list[str] = field(default_factory=list)
+    returncode: int = 0
+    skipped: bool = False
+    reason: str = ""
+    error_type: str = ""
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+
+
 @dataclass
 class MultiAgentState:
     request: MultiAgentRequest
@@ -44,6 +59,9 @@ class MultiAgentState:
     selected_tools: list[str] = field(default_factory=list)
     outputs: dict[str, Any] = field(default_factory=dict)
     trace: list[AgentMessage] = field(default_factory=list)
+    persistent_state: AgentStateRecord = field(default_factory=AgentStateRecord)
+    agent_state_path: Path | None = None
+    round_directive: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

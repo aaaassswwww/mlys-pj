@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from profiler_agent.target_semantics import classify_target
 from profiler_agent.fusion.cross_verify import Candidate, fuse_candidates
 from profiler_agent.target_strategies.base import MeasureContext, MeasureResult, TargetStrategy
 from profiler_agent.tool_adapters.microbench_adapter import measure_metric_with_evidence
@@ -62,61 +63,136 @@ class GenericMetricStrategy(TargetStrategy):
     name = "generic_metric"
 
     def measure(self, ctx: MeasureContext) -> MeasureResult:
+        semantic = ctx.target_semantic or classify_target(ctx.target)
         candidates: list[Candidate] = []
         candidate_values: dict[str, float] = {}
         candidate_reliability: dict[str, float] = {}
         tool_evidence: dict[str, object] = {}
+        workload_status = "not_required"
+        if semantic.workload_dependent:
+            workload_status = "run_command_present" if (ctx.run_cmd or "").strip() else "missing_run_command"
 
-        ncu_result = query_metric_with_evidence(ctx.target, ctx.run_cmd)
-        ncu_reliability = _score_ncu_reliability(
-            source=ncu_result.source,
-            returncode=ncu_result.returncode,
-            parse_mode=ncu_result.parse_mode,
-        )
+        ncu_source = "skipped_for_semantic_class"
+        ncu_returncode = 0
+        ncu_parse_mode = "none"
+        ncu_stderr_tail = ""
+        ncu_stdout_tail = ""
+        ncu_reliability = 0.0
+        can_use_ncu = semantic.semantic_class in {"ncu_counter", "runtime_throughput_counter"}
+        if semantic.workload_dependent and not (ctx.run_cmd or "").strip():
+            ncu_source = "workload_run_missing"
+            ncu_stderr_tail = "run_skipped_no_command"
+        elif can_use_ncu:
+            ncu_result = query_metric_with_evidence(ctx.target, ctx.run_cmd)
+            ncu_source = ncu_result.source
+            ncu_returncode = ncu_result.returncode
+            ncu_parse_mode = ncu_result.parse_mode
+            ncu_stderr_tail = ncu_result.stderr_tail
+            ncu_stdout_tail = ncu_result.stdout_tail
+            ncu_reliability = _score_ncu_reliability(
+                source=ncu_result.source,
+                returncode=ncu_result.returncode,
+                parse_mode=ncu_result.parse_mode,
+            )
+            if ncu_result.value is not None:
+                value = float(ncu_result.value)
+                candidates.append(Candidate(source="ncu", value=value, reliability=ncu_reliability))
+                candidate_values["ncu"] = value
+                candidate_reliability["ncu"] = ncu_reliability
+
         tool_evidence["ncu"] = {
-            "source": ncu_result.source,
-            "returncode": ncu_result.returncode,
-            "parse_mode": ncu_result.parse_mode,
-            "stderr_tail": ncu_result.stderr_tail,
+            "source": ncu_source,
+            "returncode": ncu_returncode,
+            "parse_mode": ncu_parse_mode,
+            "stdout_tail": ncu_stdout_tail,
+            "stderr_tail": ncu_stderr_tail,
             "reliability": ncu_reliability,
+            "semantic_gate": "enabled" if can_use_ncu else "skipped_for_semantic_class",
         }
-        if ncu_result.value is not None:
-            value = float(ncu_result.value)
-            candidates.append(Candidate(source="ncu", value=value, reliability=ncu_reliability))
-            candidate_values["ncu"] = value
-            candidate_reliability["ncu"] = ncu_reliability
 
-        probe_result = measure_metric_with_evidence(ctx.target, ctx.run_cmd)
-        probe_reliability = _score_probe_reliability(
-            sample_count=probe_result.sample_count,
-            std_value=probe_result.std_value,
-            value=probe_result.value,
-        )
+        probe_source = "skipped_for_semantic_class"
+        probe_reliability = 0.0
+        probe_compile_returncode = 0
+        probe_run_returncode = 0
+        probe_parsed_from = "none"
+        probe_metric_name = ctx.target
+        probe_sample_count = None
+        probe_best_value = None
+        probe_median_value = None
+        probe_std_value = None
+        probe_run_values = None
+        probe_source_path = None
+        probe_generation_source = None
+        probe_generation_attempts = None
+        probe_generation_error = None
+        probe_generation_trace = None
+        probe_compile_stderr_tail = ""
+        probe_compile_stdout_tail = ""
+        probe_run_stderr_tail = ""
+        probe_run_stdout_tail = ""
+        probe_compile_command = None
+        probe_run_command = None
+        can_use_probe = semantic.semantic_class in {"intrinsic_microbench", "unknown"}
+        if semantic.workload_dependent and not (ctx.run_cmd or "").strip():
+            probe_source = "workload_run_missing"
+        elif can_use_probe:
+            probe_result = measure_metric_with_evidence(ctx.target, ctx.run_cmd)
+            probe_source = probe_result.source
+            probe_compile_returncode = probe_result.compile_returncode
+            probe_run_returncode = probe_result.run_returncode
+            probe_parsed_from = probe_result.parsed_from
+            probe_metric_name = probe_result.metric_name
+            probe_sample_count = probe_result.sample_count
+            probe_best_value = probe_result.best_value
+            probe_median_value = probe_result.median_value
+            probe_std_value = probe_result.std_value
+            probe_run_values = probe_result.run_values
+            probe_source_path = probe_result.source_path
+            probe_generation_source = probe_result.generation_source
+            probe_generation_attempts = probe_result.generation_attempts
+            probe_generation_error = probe_result.generation_error
+            probe_generation_trace = probe_result.generation_trace
+            probe_compile_stderr_tail = probe_result.compile_stderr_tail
+            probe_compile_stdout_tail = probe_result.compile_stdout_tail
+            probe_run_stderr_tail = probe_result.run_stderr_tail
+            probe_run_stdout_tail = probe_result.run_stdout_tail
+            probe_compile_command = probe_result.compile_command
+            probe_run_command = probe_result.run_command
+            probe_reliability = _score_probe_reliability(
+                sample_count=probe_result.sample_count,
+                std_value=probe_result.std_value,
+                value=probe_result.value,
+            )
+            if probe_result.value is not None:
+                value = float(probe_result.value)
+                candidates.append(Candidate(source="microbench", value=value, reliability=probe_reliability))
+                candidate_values["microbench"] = value
+                candidate_reliability["microbench"] = probe_reliability
         tool_evidence["microbench"] = {
-            "source": probe_result.source,
-            "compile_returncode": probe_result.compile_returncode,
-            "run_returncode": probe_result.run_returncode,
-            "parsed_from": probe_result.parsed_from,
-            "metric_name": probe_result.metric_name,
-            "sample_count": probe_result.sample_count,
-            "best_value": probe_result.best_value,
-            "median_value": probe_result.median_value,
-            "std_value": probe_result.std_value,
-            "run_values": probe_result.run_values,
-            "source_path": probe_result.source_path,
-            "generation_source": probe_result.generation_source,
-            "generation_attempts": probe_result.generation_attempts,
-            "generation_error": probe_result.generation_error,
-            "generation_trace": probe_result.generation_trace,
-            "compile_stderr_tail": probe_result.compile_stderr_tail,
-            "run_stderr_tail": probe_result.run_stderr_tail,
+            "source": probe_source,
+            "compile_returncode": probe_compile_returncode,
+            "run_returncode": probe_run_returncode,
+            "parsed_from": probe_parsed_from,
+            "metric_name": probe_metric_name,
+            "sample_count": probe_sample_count,
+            "best_value": probe_best_value,
+            "median_value": probe_median_value,
+            "std_value": probe_std_value,
+            "run_values": probe_run_values,
+            "source_path": probe_source_path,
+            "generation_source": probe_generation_source,
+            "generation_attempts": probe_generation_attempts,
+            "generation_error": probe_generation_error,
+            "generation_trace": probe_generation_trace,
+            "compile_stdout_tail": probe_compile_stdout_tail,
+            "compile_stderr_tail": probe_compile_stderr_tail,
+            "run_stdout_tail": probe_run_stdout_tail,
+            "run_stderr_tail": probe_run_stderr_tail,
+            "compile_command": probe_compile_command,
+            "run_command": probe_run_command,
             "reliability": probe_reliability,
+            "semantic_gate": "enabled" if can_use_probe else "skipped_for_semantic_class",
         }
-        if probe_result.value is not None:
-            value = float(probe_result.value)
-            candidates.append(Candidate(source="microbench", value=value, reliability=probe_reliability))
-            candidate_values["microbench"] = value
-            candidate_reliability["microbench"] = probe_reliability
 
         if ctx.target == "actual_boost_clock_mhz":
             sm_clock_stats = sample_sm_clock_stats(sample_count=7, interval_s=0.12)
@@ -133,6 +209,11 @@ class GenericMetricStrategy(TargetStrategy):
         fusion_result = fuse_candidates(candidates, default_value=0.0)
         evidence = {
             "strategy": self.name,
+            "semantic": semantic.to_evidence(),
+            "workload_requirement": {
+                "workload_dependent": semantic.workload_dependent,
+                "status": workload_status,
+            },
             "selected_source": fusion_result.selected_source,
             "num_candidates": len(candidates),
             "candidates": candidate_values,

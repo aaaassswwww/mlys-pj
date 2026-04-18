@@ -46,10 +46,13 @@ payload = {
 
 plan = artifacts / "multi_agent_plan.json"
 trace = artifacts / "multi_agent_trace.json"
+agent_state = artifacts / "agent_state.json"
 if plan.exists():
     payload["multi_agent_plan"] = json.loads(plan.read_text(encoding="utf-8"))
 if trace.exists():
     payload["multi_agent_trace"] = json.loads(trace.read_text(encoding="utf-8"))
+if agent_state.exists():
+    payload["agent_state"] = json.loads(agent_state.read_text(encoding="utf-8"))
 
 (workspace / "output.json").write_text(
     json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),

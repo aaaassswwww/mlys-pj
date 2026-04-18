@@ -17,7 +17,11 @@ class BinaryRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("285", result.stdout)
 
+    def test_run_executable_reports_missing_command(self) -> None:
+        result = run_executable("definitely_missing_command_12345 --version")
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("required_command_not_found:definitely_missing_command_12345", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
-
