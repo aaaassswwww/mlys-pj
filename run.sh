@@ -11,6 +11,16 @@ cd "${WORKSPACE_DIR}"
 # Keep exactly one /workspace/output.* artifact for evaluator pickup.
 find "${WORKSPACE_DIR}" -maxdepth 1 -type f -name "output.*" -delete || true
 
+echo "[run.sh] Using target spec: ${SPEC_PATH}"
+if [[ -f "${SPEC_PATH}" ]]; then
+  echo "[run.sh] ---- begin target_spec.json ----"
+  cat "${SPEC_PATH}"
+  echo
+  echo "[run.sh] ---- end target_spec.json ----"
+else
+  echo "[run.sh] target spec not found: ${SPEC_PATH}" >&2
+fi
+
 rm -rf "${ARTIFACT_DIR}"
 mkdir -p "${ARTIFACT_DIR}"
 
@@ -46,4 +56,3 @@ if trace.exists():
     encoding="utf-8",
 )
 PY
-
