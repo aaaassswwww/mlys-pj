@@ -4,7 +4,7 @@ from typing import Any
 
 from profiler_agent.analyzer.bound_classifier import analyze_bound
 from profiler_agent.analyzer.llm_reasoner import build_llm_analysis
-from profiler_agent.report_summary import build_intrinsic_probe_report
+from profiler_agent.report_summary import build_intrinsic_probe_report, build_synthetic_counter_probe_report
 
 
 def _apply_detector_penalty(analysis: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
@@ -66,6 +66,16 @@ def build_analysis(results: dict[str, float], evidence: dict[str, Any]) -> dict[
             notes = []
         notes.append(
             "intrinsic_probe_report_summarizes_acceptance_reason_ncu_usage_and_semantic_validity_for_synthetic_probe_targets"
+        )
+        baseline["analysis_notes"] = notes
+    synthetic_counter_probe_report = build_synthetic_counter_probe_report(evidence)
+    if synthetic_counter_probe_report.get("count", 0):
+        baseline["synthetic_counter_probe_report"] = synthetic_counter_probe_report
+        notes = baseline.get("analysis_notes")
+        if not isinstance(notes, list):
+            notes = []
+        notes.append(
+            "synthetic_counter_probe_report_summarizes_proxy_counter_measurements_and_marks_them_as_non_workload_observations"
         )
         baseline["analysis_notes"] = notes
     llm_analysis = build_llm_analysis(results=results, evidence=evidence, baseline_analysis=baseline)

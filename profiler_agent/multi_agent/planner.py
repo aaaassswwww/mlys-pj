@@ -17,13 +17,15 @@ def _effective_targets(state: MultiAgentState) -> list[str]:
     return selected or list(state.request.targets)
 
 
-def _select_tools(targets: list[str]) -> list[str]:
+def _select_tools(targets: list[str], run_cmd: str = "") -> list[str]:
     tools = {"executor"}
     semantics = [classify_target(target) for target in targets]
     if any(item.semantic_class == "device_attribute" for item in semantics):
         tools.add("device_attribute")
     if any(item.semantic_class == "workload_counter" for item in semantics):
         tools.add("ncu")
+        if not (run_cmd or "").strip():
+            tools.add("microbench")
     if any(item.semantic_class in {"intrinsic_probe", "unknown"} for item in semantics):
         tools.add("microbench")
     if "actual_boost_clock_mhz" in targets:
@@ -61,7 +63,7 @@ class PlannerAgent:
 
     def build_plan(self, state: MultiAgentState) -> tuple[ExecutionPlan, AgentMessage]:
         effective_targets = _effective_targets(state)
-        tools = _select_tools(effective_targets)
+        tools = _select_tools(effective_targets, run_cmd=state.request.run)
         directive = state.round_directive if isinstance(state.round_directive, dict) else {}
         forced_tools = [str(item) for item in directive.get("forced_tools", []) if str(item).strip()]
         for item in forced_tools:
@@ -115,7 +117,10 @@ class PlannerAgent:
             if focus is not None:
                 tool_targets["ncu"] = focus
         if "microbench" in tools:
-            focus = _pick_focus_target(effective_targets, {"intrinsic_probe", "unknown"})
+            probe_focus_classes = {"intrinsic_probe", "unknown"}
+            if not (state.request.run or "").strip():
+                probe_focus_classes.add("workload_counter")
+            focus = _pick_focus_target(effective_targets, probe_focus_classes)
             if focus is not None:
                 tool_targets["microbench"] = focus
         if "device_attribute" in tools:

@@ -69,7 +69,7 @@ def classify_target(target: str) -> TargetSemanticInfo:
             target=normalized,
             semantic_class="workload_counter",
             semantic_subclass="runtime_throughput_counter",
-            measurement_mode_candidate="workload_profile",
+            measurement_mode_candidate="workload_profile_or_synthetic_counter_probe",
             workload_dependent=True,
             route_reason="runtime_counter_name_pattern",
         )
@@ -79,7 +79,7 @@ def classify_target(target: str) -> TargetSemanticInfo:
             target=normalized,
             semantic_class="workload_counter",
             semantic_subclass="ncu_counter",
-            measurement_mode_candidate="workload_profile",
+            measurement_mode_candidate="workload_profile_or_synthetic_counter_probe",
             workload_dependent=True,
             route_reason="ncu_counter_name_pattern",
         )

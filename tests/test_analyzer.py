@@ -99,6 +99,45 @@ class AnalyzerTests(unittest.TestCase):
             analysis["analysis_notes"],
         )
 
+    def test_analysis_includes_synthetic_counter_probe_report_summary(self) -> None:
+        results = {"dram__bytes_read.sum.per_second": 981.0}
+        evidence = {
+            "targets": {
+                "dram__bytes_read.sum.per_second": {
+                    "measurement_mode": "synthetic_counter_probe",
+                    "semantic_validity": "synthetic_counter_proxy",
+                    "probe_iteration": {
+                        "final_decision": "accept_measurement",
+                        "analysis": {
+                            "next_action": "accept_measurement",
+                            "reason": "synthetic_counter_probe_accepted",
+                            "confidence": 0.84,
+                        },
+                        "state": {
+                            "profile_history": [
+                                {"source": "ncu_csv"},
+                            ]
+                        },
+                    },
+                    "probe": {
+                        "profile_source": "ncu_csv",
+                    },
+                }
+            }
+        }
+        analysis = build_analysis(results, evidence)
+        self.assertEqual(analysis["synthetic_counter_probe_report"]["count"], 1)
+        self.assertEqual(analysis["synthetic_counter_probe_report"]["accepted_count"], 1)
+        self.assertEqual(analysis["synthetic_counter_probe_report"]["ncu_profiled_count"], 1)
+        self.assertEqual(
+            analysis["synthetic_counter_probe_report"]["targets"][0]["semantic_validity"],
+            "synthetic_counter_proxy",
+        )
+        self.assertIn(
+            "synthetic_counter_probe_report_summarizes_proxy_counter_measurements_and_marks_them_as_non_workload_observations",
+            analysis["analysis_notes"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,17 +32,17 @@
       "dram_latency_cycles": {
         "fusion_confidence": null,
         "fusion_method": null,
-        "selected_source": "fallback_default"
+        "selected_source": "synthetic_intrinsic_probe_failed"
       },
       "l2_cache_capacity_kb": {
         "fusion_confidence": null,
         "fusion_method": null,
-        "selected_source": "fallback_default"
+        "selected_source": "synthetic_intrinsic_probe_failed"
       },
       "max_shmem_per_block_kb": {
         "fusion_confidence": null,
         "fusion_method": null,
-        "selected_source": "fallback_default"
+        "selected_source": "synthetic_intrinsic_probe_failed"
       }
     }
   },

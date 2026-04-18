@@ -3,10 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 
-def build_intrinsic_probe_report(evidence: dict[str, Any]) -> dict[str, Any]:
+def _empty_report() -> dict[str, Any]:
+    return {"count": 0, "accepted_count": 0, "ncu_profiled_count": 0, "targets": []}
+
+
+def _build_probe_report_for_mode(evidence: dict[str, Any], measurement_mode: str) -> dict[str, Any]:
     targets = evidence.get("targets", {})
     if not isinstance(targets, dict):
-        return {"count": 0, "accepted_count": 0, "ncu_profiled_count": 0, "targets": []}
+        return _empty_report()
 
     entries: list[dict[str, Any]] = []
     accepted_count = 0
@@ -15,7 +19,7 @@ def build_intrinsic_probe_report(evidence: dict[str, Any]) -> dict[str, Any]:
     for target, target_evidence in targets.items():
         if not isinstance(target_evidence, dict):
             continue
-        if target_evidence.get("measurement_mode") != "synthetic_intrinsic_probe":
+        if target_evidence.get("measurement_mode") != measurement_mode:
             continue
 
         probe_iteration = target_evidence.get("probe_iteration", {})
@@ -66,3 +70,11 @@ def build_intrinsic_probe_report(evidence: dict[str, Any]) -> dict[str, Any]:
         "ncu_profiled_count": ncu_profiled_count,
         "targets": entries,
     }
+
+
+def build_intrinsic_probe_report(evidence: dict[str, Any]) -> dict[str, Any]:
+    return _build_probe_report_for_mode(evidence, "synthetic_intrinsic_probe")
+
+
+def build_synthetic_counter_probe_report(evidence: dict[str, Any]) -> dict[str, Any]:
+    return _build_probe_report_for_mode(evidence, "synthetic_counter_probe")

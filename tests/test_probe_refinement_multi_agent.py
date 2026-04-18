@@ -60,6 +60,58 @@ class ProbeRefinementMultiAgentTests(unittest.TestCase):
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
+    def test_interpreter_extracts_synthetic_counter_probe_followup_from_evidence(self) -> None:
+        out_dir = Path("tests/.tmp") / f"counter_probe_refine_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            evidence_path = out_dir / "evidence.json"
+            analysis_path = out_dir / "analysis.json"
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "targets": {
+                            "dram__bytes_read.sum.per_second": {
+                                "measurement_mode": "synthetic_counter_probe",
+                                "probe_iteration": {
+                                    "final_decision": "change_probe_shape",
+                                    "analysis": {
+                                        "next_action": "change_probe_shape",
+                                        "reason": "counter_signal_is_noisy",
+                                    },
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            analysis_path.write_text(
+                json.dumps({"bound_type": "unknown", "confidence": 0.2, "bottlenecks": []}),
+                encoding="utf-8",
+            )
+            state = MultiAgentState(
+                request=MultiAgentRequest(targets=["dram__bytes_read.sum.per_second"], run="", out_dir=out_dir),
+                outputs={
+                    "pipeline": {
+                        "evidence_path": str(evidence_path),
+                        "analysis_path": str(analysis_path),
+                        "targets": ["dram__bytes_read.sum.per_second"],
+                    }
+                },
+            )
+            agent = InterpreterAgent()
+            summary_msg = agent.summarize_outputs(state)
+            msg = agent.propose_next_actions(state)
+            self.assertEqual(summary_msg.content["synthetic_probe_followup_count"], 1)
+            self.assertEqual(state.outputs["next_targets"], ["dram__bytes_read.sum.per_second"])
+            self.assertIn(
+                "probe_change_probe_shape:dram__bytes_read.sum.per_second",
+                state.outputs["next_actions"],
+            )
+            self.assertEqual(msg.content["next_targets"], ["dram__bytes_read.sum.per_second"])
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
     def test_coordinator_builds_round_directive_for_probe_followup(self) -> None:
         state = MultiAgentState(
             request=MultiAgentRequest(targets=["dram_latency_cycles", "actual_boost_clock_mhz"], run="", out_dir=Path("tests/.tmp")),
@@ -75,6 +127,19 @@ class ProbeRefinementMultiAgentTests(unittest.TestCase):
         self.assertIn("ncu", directive["forced_tools"])
         self.assertIn("probe_refinement_requested_microbench_rerun", directive["reasons"])
         self.assertIn("probe_refinement_requested_ncu_profile", directive["reasons"])
+
+    def test_coordinator_allows_no_run_synthetic_probe_rerun(self) -> None:
+        state = MultiAgentState(
+            request=MultiAgentRequest(targets=["dram__bytes_read.sum.per_second"], run="", out_dir=Path("tests/.tmp")),
+            outputs={
+                "next_actions": ["probe_add_ncu_profile:dram__bytes_read.sum.per_second"],
+                "next_targets": ["dram__bytes_read.sum.per_second"],
+                "tool_calls": {},
+            },
+        )
+        should_continue, reason = MultiAgentCoordinator._should_iterate(state, execution_round=1, max_iterations=2)
+        self.assertTrue(should_continue)
+        self.assertEqual(reason, "synthetic_probe_refinement_requested_rerun")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from profiler_agent.detectors.service import run_detectors
 from profiler_agent.io.logger import build_logger
 from profiler_agent.io.write_results import write_analysis, write_evidence, write_results
 from profiler_agent.orchestrator.task_planner import build_task_plan
-from profiler_agent.report_summary import build_intrinsic_probe_report
+from profiler_agent.report_summary import build_intrinsic_probe_report, build_synthetic_counter_probe_report
 from profiler_agent.schema.result_schema import normalize_results_with_specs
 from profiler_agent.schema.target_spec_schema import TargetSpec
 from profiler_agent.target_semantics import classify_target
@@ -89,6 +89,7 @@ def execute(spec: TargetSpec, out_dir: Path) -> PipelineOutput:
     evidence["result_quality"] = result_quality
     evidence["workload_placeholders"] = _build_workload_placeholder_summary(evidence)
     evidence["intrinsic_probe_report"] = build_intrinsic_probe_report(evidence)
+    evidence["synthetic_counter_probe_report"] = build_synthetic_counter_probe_report(evidence)
     evidence["detectors"] = run_detectors(results=normalized_results, evidence=evidence)
     analysis = build_analysis(results=normalized_results, evidence=evidence)
     results_path = write_results(out_dir, normalized_results, spec.targets)

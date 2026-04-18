@@ -15,6 +15,7 @@ class TargetSemanticsTests(unittest.TestCase):
         semantic = classify_target("dram__bytes_read.sum.per_second")
         self.assertEqual(semantic.semantic_class, "workload_counter")
         self.assertEqual(semantic.semantic_subclass, "runtime_throughput_counter")
+        self.assertEqual(semantic.measurement_mode_candidate, "workload_profile_or_synthetic_counter_probe")
         self.assertTrue(semantic.workload_dependent)
 
     def test_intrinsic_classification(self) -> None:

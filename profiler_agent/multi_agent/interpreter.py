@@ -64,10 +64,11 @@ class InterpreterAgent:
             return {"followups": [], "targets": []}
         followups: list[dict[str, str]] = []
         focus_targets: list[str] = []
+        supported_modes = {"synthetic_intrinsic_probe", "synthetic_counter_probe"}
         for target, target_evidence in targets.items():
             if not isinstance(target_evidence, dict):
                 continue
-            if target_evidence.get("measurement_mode") != "synthetic_intrinsic_probe":
+            if target_evidence.get("measurement_mode") not in supported_modes:
                 continue
             probe_iteration = target_evidence.get("probe_iteration", {})
             if not isinstance(probe_iteration, dict):
@@ -136,7 +137,7 @@ class InterpreterAgent:
                 probe_refinement = self._extract_probe_refinement(data)
                 if probe_refinement["followups"]:
                     summary["probe_refinement"] = probe_refinement
-                    summary["intrinsic_probe_followup_count"] = len(probe_refinement["followups"])
+                    summary["synthetic_probe_followup_count"] = len(probe_refinement["followups"])
 
         if self.llm_client is not None and self.llm_client.is_enabled() and analysis_obj:
             llm_attempted = True

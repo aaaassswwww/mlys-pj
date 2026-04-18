@@ -81,6 +81,8 @@ def run_probe_iteration(
     target: str,
     run_cmd: str = "",
     max_probe_iterations: int | None = None,
+    measurement_mode: str = "synthetic_intrinsic_probe",
+    semantic_validity: str = "intrinsic_proxy",
 ) -> ProbeIterationResult:
     state = ProbeIterationState(target=target)
     max_rounds = max_probe_iterations or _default_max_iterations()
@@ -164,8 +166,8 @@ def run_probe_iteration(
     assert final_result is not None
     confidence = _round_confidence(final_result, state.iteration)
     evidence = {
-        "measurement_mode": "synthetic_intrinsic_probe",
-        "semantic_validity": "intrinsic_proxy",
+        "measurement_mode": measurement_mode,
+        "semantic_validity": semantic_validity,
         "probe_iteration": {
             "iteration_count": state.iteration,
             "final_decision": final_decision,

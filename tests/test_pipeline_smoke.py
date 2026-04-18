@@ -8,10 +8,86 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from profiler_agent.orchestrator.pipeline import execute
+from profiler_agent.probe_iteration import ProbeIterationResult, ProbeIterationState
 from profiler_agent.schema.target_spec_schema import TargetSpec
 
 
 class PipelineSmokeTests(unittest.TestCase):
+    @staticmethod
+    def _synthetic_counter_probe_result(target: str, value: float = 987.0) -> ProbeIterationResult:
+        state = ProbeIterationState(
+            target=target,
+            iteration=1,
+            generation_attempts=1,
+            compile_history=[],
+            run_history=[],
+            profile_history=[{"iteration": 1, "source": "ncu_csv"}],
+            analysis_history=[],
+            done=True,
+            best_measurement=value,
+        )
+        return ProbeIterationResult(
+            value=value,
+            source="microbench_probe",
+            confidence=0.82,
+            state=state,
+            evidence={
+                "measurement_mode": "synthetic_counter_probe",
+                "semantic_validity": "synthetic_counter_proxy",
+                "probe_iteration": {
+                    "iteration_count": 1,
+                    "final_decision": "accept_measurement",
+                    "accepted_round": 1,
+                    "analysis": {
+                        "next_action": "accept_measurement",
+                        "reason": "synthetic_counter_probe_accepted",
+                        "confidence": 0.82,
+                    },
+                    "state": {
+                        "target": target,
+                        "iteration": 1,
+                        "generation_attempts": 1,
+                        "compile_history": [],
+                        "run_history": [],
+                        "profile_history": [{"iteration": 1, "source": "ncu_csv"}],
+                        "analysis_history": [],
+                        "done": True,
+                        "best_measurement": value,
+                    },
+                },
+                "probe": {
+                    "source": "microbench_probe",
+                    "compile_returncode": 0,
+                    "run_returncode": 0,
+                    "parsed_from": "multi_run_median[structured_metric_value]",
+                    "metric_name": target,
+                    "sample_count": 5,
+                    "best_value": value - 3.0,
+                    "median_value": value,
+                    "std_value": 4.0,
+                    "run_values": [value - 3.0, value, value + 2.0],
+                    "compile_stderr_tail": "",
+                    "run_stderr_tail": "",
+                    "compile_stdout_tail": "",
+                    "run_stdout_tail": "",
+                    "compile_command": ["nvcc"],
+                    "run_command": ["probe.exe"],
+                    "source_path": None,
+                    "generation_source": "llm_generated",
+                    "generation_attempts": 1,
+                    "generation_error": "",
+                    "generation_trace": [],
+                    "profile_source": "ncu_csv",
+                    "profile_returncode": 0,
+                    "profile_parse_mode": "csv_metric_value",
+                    "profile_command": ["ncu"],
+                    "profile_stdout_tail": "",
+                    "profile_stderr_tail": "",
+                },
+                "confidence": 0.82,
+            },
+        )
+
     def test_execute_writes_results_and_evidence(self) -> None:
         spec = TargetSpec(
             targets=["dram_latency_cycles", "actual_boost_clock_mhz"],
@@ -76,9 +152,15 @@ class PipelineSmokeTests(unittest.TestCase):
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
-    def test_execute_without_run_marks_workload_counter_placeholders(self) -> None:
+    @patch("profiler_agent.target_strategies.generic.run_probe_iteration")
+    def test_execute_without_run_uses_synthetic_counter_probe(
+        self,
+        mock_probe_iteration: unittest.mock.Mock,
+    ) -> None:
+        target = "dram__bytes_read.sum.per_second"
+        mock_probe_iteration.return_value = self._synthetic_counter_probe_result(target)
         spec = TargetSpec(
-            targets=["dram__bytes_read.sum.per_second"],
+            targets=[target],
             run="",
         )
         out_dir = Path("tests/.tmp") / f"smoke_placeholder_{uuid4().hex}"
@@ -87,11 +169,18 @@ class PipelineSmokeTests(unittest.TestCase):
             output = execute(spec, out_dir)
             evidence = json.loads(output.evidence_path.read_text(encoding="utf-8"))
             analysis = json.loads(output.analysis_path.read_text(encoding="utf-8"))
-            self.assertEqual(evidence["workload_placeholders"]["count"], 1)
-            self.assertIn("dram__bytes_read.sum.per_second", evidence["workload_placeholders"]["targets"])
-            self.assertEqual(analysis["workload_placeholder_count"], 1)
+            self.assertEqual(evidence["targets"][target]["measurement_mode"], "synthetic_counter_probe")
+            self.assertEqual(evidence["targets"][target]["semantic_validity"], "synthetic_counter_proxy")
+            self.assertEqual(
+                evidence["targets"][target]["workload_requirement"]["status"],
+                "missing_run_command_replaced_with_synthetic_probe",
+            )
+            self.assertEqual(evidence["workload_placeholders"]["count"], 0)
+            self.assertEqual(evidence["synthetic_counter_probe_report"]["count"], 1)
+            self.assertEqual(evidence["synthetic_counter_probe_report"]["ncu_profiled_count"], 1)
+            self.assertEqual(analysis["synthetic_counter_probe_report"]["count"], 1)
             self.assertIn(
-                "workload_dependent_targets_without_run_were_left_as_placeholder_zero_values_and_excluded_from_observed_metrics",
+                "synthetic_counter_probe_report_summarizes_proxy_counter_measurements_and_marks_them_as_non_workload_observations",
                 analysis["analysis_notes"],
             )
         finally:

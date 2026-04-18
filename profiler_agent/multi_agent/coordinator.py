@@ -255,17 +255,22 @@ class MultiAgentCoordinator:
             )
         ):
             return False, "no_run_input_finalized_with_placeholders"
-        rerun_requested = any(
-            any(token in str(action) for token in ("re-run_pipeline", "collect_ncu_", "collect_compute_", "collect_nsys_"))
-            for action in next_actions
-        )
-        rerun_requested = rerun_requested or MultiAgentCoordinator._matches_any(
+        probe_rerun_requested = MultiAgentCoordinator._matches_any(
             normalized_actions,
             (
                 "probe_repair_compile:",
                 "probe_repair_runtime:",
                 "probe_change_probe_shape:",
                 "probe_add_ncu_profile:",
+            ),
+        )
+        rerun_requested = any(
+            any(token in str(action) for token in ("re-run_pipeline", "collect_ncu_", "collect_compute_", "collect_nsys_"))
+            for action in next_actions
+        )
+        rerun_requested = rerun_requested or probe_rerun_requested or MultiAgentCoordinator._matches_any(
+            normalized_actions,
+            (
                 "profile sm efficiency",
                 "measure dram utilization",
                 "assess compute and memory throughput",
@@ -276,6 +281,8 @@ class MultiAgentCoordinator:
 
         if recoverable_errors:
             return True, "recoverable_tool_failure"
+        if probe_rerun_requested:
+            return True, "synthetic_probe_refinement_requested_rerun"
         if rerun_requested and (state.request.run or "").strip():
             return True, "refinement_requested_rerun"
         if rerun_requested and not (state.request.run or "").strip():

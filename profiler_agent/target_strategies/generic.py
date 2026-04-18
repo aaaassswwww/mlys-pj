@@ -60,27 +60,64 @@ def _score_nvml_clock_reliability(stats: dict[str, object]) -> float:
     return _clamp(score)
 
 
+def _measure_with_probe_iteration(
+    ctx: MeasureContext,
+    semantic,
+    *,
+    measurement_mode: str,
+    semantic_validity: str,
+    workload_status: str,
+    selected_source: str,
+    workload_note: str,
+) -> MeasureResult:
+    iteration = run_probe_iteration(
+        target=ctx.target,
+        run_cmd=ctx.run_cmd,
+        measurement_mode=measurement_mode,
+        semantic_validity=semantic_validity,
+    )
+    evidence = {
+        "strategy": GenericMetricStrategy.name,
+        "semantic": semantic.to_evidence(),
+        "measurement_mode": measurement_mode,
+        "semantic_validity": semantic_validity,
+        "workload_requirement": {
+            "workload_dependent": semantic.workload_dependent,
+            "status": workload_status,
+            "note": workload_note,
+        },
+        "selected_source": selected_source if iteration.value is not None else f"{selected_source}_failed",
+        **iteration.evidence,
+        "run_returncode": ctx.run_returncode,
+    }
+    return MeasureResult(value=float(iteration.value or 0.0), evidence=evidence)
+
+
 class GenericMetricStrategy(TargetStrategy):
     name = "generic_metric"
 
     def measure(self, ctx: MeasureContext) -> MeasureResult:
         semantic = ctx.target_semantic or classify_target(ctx.target)
         if semantic.semantic_class == "intrinsic_probe":
-            iteration = run_probe_iteration(target=ctx.target, run_cmd=ctx.run_cmd)
-            evidence = {
-                "strategy": self.name,
-                "semantic": semantic.to_evidence(),
-                "measurement_mode": "synthetic_intrinsic_probe",
-                "semantic_validity": "intrinsic_proxy",
-                "workload_requirement": {
-                    "workload_dependent": semantic.workload_dependent,
-                    "status": "not_required",
-                },
-                "selected_source": "synthetic_intrinsic_probe" if iteration.value is not None else "fallback_default",
-                **iteration.evidence,
-                "run_returncode": ctx.run_returncode,
-            }
-            return MeasureResult(value=float(iteration.value or 0.0), evidence=evidence)
+            return _measure_with_probe_iteration(
+                ctx,
+                semantic,
+                measurement_mode="synthetic_intrinsic_probe",
+                semantic_validity="intrinsic_proxy",
+                workload_status="not_required",
+                selected_source="synthetic_intrinsic_probe",
+                workload_note="intrinsic_probe_does_not_require_user_workload_execution",
+            )
+        if semantic.semantic_class == "workload_counter" and not (ctx.run_cmd or "").strip():
+            return _measure_with_probe_iteration(
+                ctx,
+                semantic,
+                measurement_mode="synthetic_counter_probe",
+                semantic_validity="synthetic_counter_proxy",
+                workload_status="missing_run_command_replaced_with_synthetic_probe",
+                selected_source="synthetic_counter_probe",
+                workload_note="synthetic_probe_result_is_not_a_direct_observation_of_the_user_workload",
+            )
         candidates: list[Candidate] = []
         candidate_values: dict[str, float] = {}
         candidate_reliability: dict[str, float] = {}
