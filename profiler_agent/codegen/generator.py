@@ -120,6 +120,153 @@ class ProbeCodeGenerator:
         source_path.write_text(code, encoding="utf-8")
         return source_path
 
+    @staticmethod
+    def _is_workload_counter_metric(metric: str) -> bool:
+        return "__" in (metric or "").strip().lower()
+
+    @staticmethod
+    def _counter_probe_template(metric: str) -> str:
+        lowered = metric.strip().lower()
+        if "dram__bytes_read" in lowered:
+            kernel_body = (
+                "    unsigned long long idx = (unsigned long long)(blockIdx.x * blockDim.x + threadIdx.x);\n"
+                "    unsigned long long stride = (unsigned long long)(blockDim.x * gridDim.x);\n"
+                "    float acc = 0.0f;\n"
+                "    for (int it = 0; it < iterations; ++it) {\n"
+                "        for (unsigned long long i = idx; i < count; i += stride) {\n"
+                "            acc += src[i];\n"
+                "        }\n"
+                "    }\n"
+                "    if (idx == 0) { sink[0] = acc; }\n"
+            )
+            bytes_expr = "((double)count * sizeof(float) * iterations)"
+        elif "dram__bytes_write" in lowered:
+            kernel_body = (
+                "    unsigned long long idx = (unsigned long long)(blockIdx.x * blockDim.x + threadIdx.x);\n"
+                "    unsigned long long stride = (unsigned long long)(blockDim.x * gridDim.x);\n"
+                "    for (int it = 0; it < iterations; ++it) {\n"
+                "        for (unsigned long long i = idx; i < count; i += stride) {\n"
+                "            dst[i] = (float)(i + it);\n"
+                "        }\n"
+                "    }\n"
+                "    if (idx == 0) { sink[0] = dst[0]; }\n"
+            )
+            bytes_expr = "((double)count * sizeof(float) * iterations)"
+        elif "sm__throughput" in lowered:
+            kernel_body = (
+                "    unsigned long long idx = (unsigned long long)(blockIdx.x * blockDim.x + threadIdx.x);\n"
+                "    float x = (float)(idx % 97) * 0.01f + 1.0f;\n"
+                "    float y = (float)(idx % 31) * 0.02f + 0.5f;\n"
+                "    #pragma unroll 1\n"
+                "    for (int it = 0; it < iterations * 256; ++it) {\n"
+                "        x = x * 1.000013f + y;\n"
+                "        y = y * 0.999983f + x;\n"
+                "        x = x * 0.500001f + y * 0.499999f;\n"
+                "    }\n"
+                "    if (idx == 0) { sink[0] = x + y; }\n"
+            )
+            bytes_expr = "((double)grid.x * block.x * iterations * 256.0)"
+        else:
+            kernel_body = (
+                "    unsigned long long idx = (unsigned long long)(blockIdx.x * blockDim.x + threadIdx.x);\n"
+                "    unsigned long long stride = (unsigned long long)(blockDim.x * gridDim.x);\n"
+                "    float acc = 0.0f;\n"
+                "    for (int it = 0; it < iterations; ++it) {\n"
+                "        for (unsigned long long i = idx; i < count; i += stride) {\n"
+                "            float v = src[i];\n"
+                "            v = v * 1.00001f + (float)(i & 7);\n"
+                "            dst[i] = v;\n"
+                "            acc += v;\n"
+                "        }\n"
+                "    }\n"
+                "    if (idx == 0) { sink[0] = acc + dst[0]; }\n"
+            )
+            bytes_expr = "((double)count * sizeof(float) * iterations * 2.0)"
+
+        return (
+            "#include <cstdio>\n"
+            "#include <cuda_runtime.h>\n\n"
+            "__global__ void counter_probe_kernel(const float* src, float* dst, float* sink, unsigned long long count, int iterations) {\n"
+            f"{kernel_body}"
+            "}\n\n"
+            "int main() {\n"
+            "    const unsigned long long count = 1u << 22;\n"
+            "    const int iterations = 128;\n"
+            "    float* src = 0;\n"
+            "    float* dst = 0;\n"
+            "    float* sink = 0;\n"
+            "    if (cudaMalloc((void**)&src, count * sizeof(float)) != cudaSuccess) {\n"
+            f"        printf(\"metric={metric} value=0 samples=0 mode=ncu_profiled median=0 best=0 std=0\\n\");\n"
+            "        return 1;\n"
+            "    }\n"
+            "    if (cudaMalloc((void**)&dst, count * sizeof(float)) != cudaSuccess) {\n"
+            "        cudaFree(src);\n"
+            f"        printf(\"metric={metric} value=0 samples=0 mode=ncu_profiled median=0 best=0 std=0\\n\");\n"
+            "        return 1;\n"
+            "    }\n"
+            "    if (cudaMalloc((void**)&sink, sizeof(float)) != cudaSuccess) {\n"
+            "        cudaFree(src);\n"
+            "        cudaFree(dst);\n"
+            f"        printf(\"metric={metric} value=0 samples=0 mode=ncu_profiled median=0 best=0 std=0\\n\");\n"
+            "        return 1;\n"
+            "    }\n"
+            "    cudaMemset(dst, 0, count * sizeof(float));\n"
+            "    cudaMemset(sink, 0, sizeof(float));\n"
+            "    dim3 block(256);\n"
+            "    dim3 grid(160);\n"
+            "    cudaEvent_t start;\n"
+            "    cudaEvent_t stop;\n"
+            "    cudaEventCreate(&start);\n"
+            "    cudaEventCreate(&stop);\n"
+            "    cudaEventRecord(start);\n"
+            "    counter_probe_kernel<<<grid, block>>>(src, dst, sink, count, iterations);\n"
+            "    cudaEventRecord(stop);\n"
+            "    cudaEventSynchronize(stop);\n"
+            "    float ms = 0.0f;\n"
+            "    cudaEventElapsedTime(&ms, start, stop);\n"
+            "    if (ms <= 0.0f) { ms = 0.001f; }\n"
+            f"    double proxy = {bytes_expr} / ((double)ms * 1.0e-3);\n"
+            f"    printf(\"metric={metric} value=%0.6f samples=1 mode=ncu_profiled median=%0.6f best=%0.6f std=0\\n\", proxy, proxy, proxy);\n"
+            "    cudaEventDestroy(start);\n"
+            "    cudaEventDestroy(stop);\n"
+            "    cudaFree(src);\n"
+            "    cudaFree(dst);\n"
+            "    cudaFree(sink);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+
+    def _fallback_generate(self, *, metric: str, out_dir: Path, llm_error: str) -> ProbeGenerationResult:
+        if self._is_workload_counter_metric(metric):
+            code = _normalize_generated_code(self._counter_probe_template(metric))
+            ok, validation_error = _validate_generated_code(code)
+            if not ok:
+                return ProbeGenerationResult(
+                    ok=False,
+                    metric=metric,
+                    source_path=out_dir / _sanitize_metric(metric) / "probe.cu",
+                    source_type="template_generated",
+                    rationale="",
+                    error=validation_error,
+                )
+            source_path = self._write_code(metric=metric, code=code, out_dir=out_dir)
+            return ProbeGenerationResult(
+                ok=True,
+                metric=metric,
+                source_path=source_path,
+                source_type="template_generated",
+                rationale=f"template_generated_after_{llm_error or 'llm_failure'}",
+                error="",
+            )
+        return ProbeGenerationResult(
+            ok=False,
+            metric=metric,
+            source_path=out_dir / _sanitize_metric(metric) / "probe.cu",
+            source_type="llm_generated",
+            rationale="",
+            error=llm_error,
+        )
+
     def _llm_generate(self, *, metric: str, prior_error: str | None = None) -> tuple[Optional[dict], str]:
         if not self.is_enabled():
             return None, "llm_disabled"
@@ -143,29 +290,17 @@ class ProbeCodeGenerator:
     ) -> ProbeGenerationResult:
         payload, llm_error = self._llm_generate(metric=metric, prior_error=prior_error)
         if payload is None:
-            return ProbeGenerationResult(
-                ok=False,
-                metric=metric,
-                source_path=out_dir / _sanitize_metric(metric) / "probe.cu",
-                source_type="llm_generated",
-                rationale="",
-                error=llm_error,
-            )
+            return self._fallback_generate(metric=metric, out_dir=out_dir, llm_error=llm_error)
 
         code = payload.get("code")
         rationale = payload.get("rationale")
         if not isinstance(code, str) or not code.strip():
-            return ProbeGenerationResult(
-                ok=False,
-                metric=metric,
-                source_path=out_dir / _sanitize_metric(metric) / "probe.cu",
-                source_type="llm_generated",
-                rationale="",
-                error="missing_code",
-            )
+            return self._fallback_generate(metric=metric, out_dir=out_dir, llm_error="missing_code")
         code = _normalize_generated_code(code)
         ok, validation_error = _validate_generated_code(code)
         if not ok:
+            if self._is_workload_counter_metric(metric):
+                return self._fallback_generate(metric=metric, out_dir=out_dir, llm_error=validation_error)
             return ProbeGenerationResult(
                 ok=False,
                 metric=metric,

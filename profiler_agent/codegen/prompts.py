@@ -5,6 +5,14 @@ import json
 
 def _measurement_spec(metric: str) -> dict[str, object]:
     lowered = (metric or "").strip().lower()
+    if "__" in lowered:
+        return {
+            "mode": "ncu_profiled",
+            "experiment_shape": "synthetic counter-oriented workload that can be profiled with Nsight Compute on the generated probe binary",
+            "requires_ncu_profile": True,
+            "kernel_shape": "profiling-friendly steady-state kernel whose structure matches the requested counter family",
+            "semantic_note": "this is a synthetic proxy measurement for the requested counter, not a direct observation of the user workload",
+        }
     if "latency" in lowered or lowered.endswith("_cycles"):
         return {
             "mode": "direct",
@@ -69,6 +77,11 @@ def build_probe_generation_user_prompt(*, metric: str, prior_error: str | None =
             "use_clock64_or_clock_not___clock64",
         ],
         "measurement_spec": measurement_spec,
+        "semantic_expectation": (
+            "counter_proxy_probe_not_direct_workload_observation"
+            if "__" in metric
+            else "direct_or_intrinsic_measurement_probe"
+        ),
         "output_protocol_template": (
             f"metric={metric} value=%f samples=%d mode={measurement_spec['mode']} "
             "median=%f best=%f std=%f"

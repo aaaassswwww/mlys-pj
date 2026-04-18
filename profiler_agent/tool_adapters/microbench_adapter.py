@@ -335,6 +335,10 @@ def _profile_generated_probe_enabled(metric_name: str, force_profile: bool = Fal
     return "__" in lowered
 
 
+def _is_workload_counter_metric(metric_name: str) -> bool:
+    return "__" in (metric_name or "").strip().lower()
+
+
 def _select_probe_source(
     *,
     metric_name: str,
@@ -450,7 +454,7 @@ def measure_metric_with_evidence(
 
     binary = (
         _generated_probe_binary_path(metric_name)
-        if source_type == "llm_generated"
+        if source_type in {"llm_generated", "template_generated"}
         else _probe_binary_path(_PROBE_MAP.get(metric_name, metric_name))
     )
     if not source.exists():
@@ -607,6 +611,39 @@ def measure_metric_with_evidence(
 
     if _profile_generated_probe_enabled(metric_name, force_profile=force_profile):
         profile_stage = profile_probe_with_ncu(metric_name=metric_name, binary=binary)
+
+    if profile_stage.value is not None and _is_workload_counter_metric(metric_name):
+        profiled_value = float(profile_stage.value)
+        return ProbeResult(
+            value=profiled_value,
+            source="ncu_profiled_probe",
+            compile_returncode=compile_rc,
+            run_returncode=run_rc,
+            compile_stdout_tail=(compile_out or "")[-1000:],
+            compile_stderr_tail=(compile_err or "")[-1000:],
+            run_stdout_tail=(run_out or "")[-1000:],
+            run_stderr_tail=(run_err or "")[-1000:],
+            compile_command=compile_argv,
+            run_command=run_argv,
+            parsed_from="ncu_profiled_probe[counter_metric]",
+            metric_name=metric_name,
+            sample_count=max(1, repeat),
+            best_value=profiled_value,
+            median_value=profiled_value,
+            std_value=0.0,
+            run_values=[profiled_value],
+            source_path=str(source),
+            generation_source=source_type,
+            generation_attempts=generation_attempts,
+            generation_error=generation_error,
+            generation_trace=generation_trace,
+            profile_source=profile_stage.source,
+            profile_returncode=profile_stage.returncode,
+            profile_parse_mode=profile_stage.parse_mode,
+            profile_command=profile_stage.command,
+            profile_stdout_tail=profile_stage.stdout_tail,
+            profile_stderr_tail=profile_stage.stderr_tail,
+        )
 
     if run_values:
         aggregate_value = float(statistics.median(run_values))

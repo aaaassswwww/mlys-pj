@@ -19,6 +19,58 @@ class MicrobenchAdapterTests(unittest.TestCase):
         self.assertIsNone(result.value)
         self.assertEqual(result.source, "unsupported_metric")
 
+    @patch("profiler_agent.tool_adapters.microbench_adapter.query_metric_with_evidence")
+    @patch("profiler_agent.tool_adapters.microbench_adapter._run_probe")
+    @patch("profiler_agent.tool_adapters.microbench_adapter._compile_probe")
+    @patch("profiler_agent.tool_adapters.microbench_adapter._select_probe_source")
+    def test_workload_counter_prefers_ncu_profiled_probe_value(
+        self,
+        mock_select_probe_source: unittest.mock.Mock,
+        mock_compile_probe: unittest.mock.Mock,
+        mock_run_probe: unittest.mock.Mock,
+        mock_query: unittest.mock.Mock,
+    ) -> None:
+        from profiler_agent.tool_adapters.ncu_adapter import NcuQueryResult
+
+        tmp_dir = Path("tests/.tmp/microbench_counter")
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        source_path = tmp_dir / "probe.cu"
+        source_path.write_text("// probe", encoding="utf-8")
+        try:
+            mock_select_probe_source.return_value = (
+                source_path,
+                "template_generated",
+                1,
+                "llm_empty_or_invalid_json",
+                [],
+            )
+            mock_compile_probe.return_value = (0, "", "", ["nvcc", str(source_path), "-o", "probe.exe"])
+            mock_run_probe.return_value = (
+                0,
+                "metric=dram__bytes_read.sum.per_second value=1 samples=1 mode=ncu_profiled median=1 best=1 std=0\n",
+                "",
+                ["probe.exe"],
+            )
+            mock_query.return_value = NcuQueryResult(
+                value=1234.5,
+                source="ncu_csv",
+                returncode=0,
+                parse_mode="csv_metric_row",
+                command=["ncu", "--metrics", "dram__bytes_read.sum.per_second", "probe.exe"],
+                stdout_tail="csv",
+                stderr_tail="",
+            )
+
+            result = measure_metric_with_evidence("dram__bytes_read.sum.per_second", "")
+            self.assertEqual(result.source, "ncu_profiled_probe")
+            self.assertEqual(result.value, 1234.5)
+            self.assertEqual(result.profile_source, "ncu_csv")
+            self.assertEqual(result.generation_source, "template_generated")
+            self.assertEqual(result.parsed_from, "ncu_profiled_probe[counter_metric]")
+        finally:
+            if source_path.exists():
+                source_path.unlink()
+
     @patch("profiler_agent.tool_adapters.microbench_adapter._probe_source_path")
     @patch("profiler_agent.tool_adapters.microbench_adapter._compile_probe")
     @patch("profiler_agent.tool_adapters.microbench_adapter._run_probe")

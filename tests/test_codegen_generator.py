@@ -116,6 +116,20 @@ class CodegenGeneratorTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.error, "missing_structured_output_protocol")
 
+    def test_generate_probe_falls_back_to_template_for_workload_counter(self) -> None:
+        out_dir = Path("tests/.tmp") / f"codegen_counter_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            gen = ProbeCodeGenerator(llm_client=_FakeLLM(None))
+            result = gen.generate_probe(metric="dram__bytes_read.sum.per_second", out_dir=out_dir)
+            self.assertTrue(result.ok)
+            self.assertEqual(result.source_type, "template_generated")
+            text = result.source_path.read_text(encoding="utf-8")
+            self.assertIn("mode=ncu_profiled", text)
+            self.assertIn("counter_probe_kernel", text)
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
