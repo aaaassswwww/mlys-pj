@@ -9,6 +9,7 @@ from profiler_agent.detectors.service import run_detectors
 from profiler_agent.io.logger import build_logger
 from profiler_agent.io.write_results import write_analysis, write_evidence, write_results
 from profiler_agent.orchestrator.task_planner import build_task_plan
+from profiler_agent.report_summary import build_intrinsic_probe_report
 from profiler_agent.schema.result_schema import normalize_results_with_specs
 from profiler_agent.schema.target_spec_schema import TargetSpec
 from profiler_agent.target_semantics import classify_target
@@ -23,6 +24,27 @@ class PipelineOutput:
     evidence_path: Path
     analysis_path: Path
     run_result: RunResult
+
+
+def _build_workload_placeholder_summary(evidence: dict[str, Any]) -> dict[str, Any]:
+    targets = evidence.get("targets", {})
+    if not isinstance(targets, dict):
+        return {"count": 0, "targets": [], "reason": ""}
+    placeholder_targets: list[str] = []
+    for target, target_evidence in targets.items():
+        if not isinstance(target_evidence, dict):
+            continue
+        workload_req = target_evidence.get("workload_requirement")
+        if not isinstance(workload_req, dict):
+            continue
+        if workload_req.get("status") != "missing_run_command":
+            continue
+        placeholder_targets.append(str(target))
+    return {
+        "count": len(placeholder_targets),
+        "targets": placeholder_targets,
+        "reason": "workload_dependent_targets_without_run_use_placeholder_zero_values",
+    }
 
 
 def execute(spec: TargetSpec, out_dir: Path) -> PipelineOutput:
@@ -65,6 +87,8 @@ def execute(spec: TargetSpec, out_dir: Path) -> PipelineOutput:
 
     normalized_results, result_quality = normalize_results_with_specs(results=results, expected_targets=spec.targets)
     evidence["result_quality"] = result_quality
+    evidence["workload_placeholders"] = _build_workload_placeholder_summary(evidence)
+    evidence["intrinsic_probe_report"] = build_intrinsic_probe_report(evidence)
     evidence["detectors"] = run_detectors(results=normalized_results, evidence=evidence)
     analysis = build_analysis(results=normalized_results, evidence=evidence)
     results_path = write_results(out_dir, normalized_results, spec.targets)

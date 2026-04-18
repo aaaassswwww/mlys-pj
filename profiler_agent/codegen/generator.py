@@ -67,7 +67,12 @@ def _normalize_generated_code(code: str) -> str:
 
 def _ensure_output_protocol(code: str) -> bool:
     lowered = code.lower()
-    return "metric=" in lowered and "value=" in lowered and ("samples=" in lowered or "sample" in lowered)
+    return (
+        "metric=" in lowered
+        and "value=" in lowered
+        and ("samples=" in lowered or "sample" in lowered)
+        and "mode=" in lowered
+    )
 
 
 def _basic_cuda_shape_ok(code: str) -> bool:

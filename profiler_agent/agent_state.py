@@ -19,6 +19,7 @@ class AgentStateRecord:
     analysis_history: list[dict[str, object]] = field(default_factory=list)
     error_history: list[dict[str, object]] = field(default_factory=list)
     recommended_next_actions: list[list[str]] = field(default_factory=list)
+    recommended_next_targets: list[list[str]] = field(default_factory=list)
     current_bottleneck: str = "unknown"
     done: bool = False
     last_out_dir: str = ""

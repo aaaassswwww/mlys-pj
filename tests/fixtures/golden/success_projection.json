@@ -29,7 +29,7 @@
       "dram_latency_cycles": {
         "fusion_confidence": null,
         "fusion_method": null,
-        "selected_source": "microbench_probe"
+        "selected_source": "synthetic_intrinsic_probe"
       }
     }
   },

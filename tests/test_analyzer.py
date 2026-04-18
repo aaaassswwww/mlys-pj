@@ -45,6 +45,60 @@ class AnalyzerTests(unittest.TestCase):
         self.assertLessEqual(analysis["confidence_adjusted"], analysis["confidence"])
         self.assertEqual(analysis["confidence_penalty"], 0.2)
 
+    def test_analysis_marks_workload_placeholder_targets(self) -> None:
+        results = {"dram__bytes_read.sum.per_second": 0.0}
+        evidence = {
+            "targets": {},
+            "workload_placeholders": {
+                "count": 1,
+                "targets": ["dram__bytes_read.sum.per_second"],
+                "reason": "workload_dependent_targets_without_run_use_placeholder_zero_values",
+            },
+        }
+        analysis = build_analysis(results, evidence)
+        self.assertEqual(analysis["workload_placeholder_count"], 1)
+        self.assertIn("dram__bytes_read.sum.per_second", analysis["workload_placeholder_targets"])
+
+    def test_analysis_includes_intrinsic_probe_report_summary(self) -> None:
+        results = {"dram_latency_cycles": 420.0}
+        evidence = {
+            "targets": {
+                "dram_latency_cycles": {
+                    "measurement_mode": "synthetic_intrinsic_probe",
+                    "semantic_validity": "intrinsic_proxy",
+                    "probe_iteration": {
+                        "final_decision": "accept_measurement",
+                        "analysis": {
+                            "next_action": "accept_measurement",
+                            "reason": "measurement_accepted",
+                            "confidence": 0.9,
+                        },
+                        "state": {
+                            "profile_history": [
+                                {"source": "skipped_not_requested"},
+                                {"source": "ncu_csv"},
+                            ]
+                        },
+                    },
+                    "probe": {
+                        "profile_source": "ncu_csv",
+                    },
+                }
+            }
+        }
+        analysis = build_analysis(results, evidence)
+        self.assertEqual(analysis["intrinsic_probe_report"]["count"], 1)
+        self.assertEqual(analysis["intrinsic_probe_report"]["accepted_count"], 1)
+        self.assertEqual(analysis["intrinsic_probe_report"]["ncu_profiled_count"], 1)
+        self.assertEqual(
+            analysis["intrinsic_probe_report"]["targets"][0]["acceptance_reason"],
+            "measurement_accepted",
+        )
+        self.assertIn(
+            "intrinsic_probe_report_summarizes_acceptance_reason_ncu_usage_and_semantic_validity_for_synthetic_probe_targets",
+            analysis["analysis_notes"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

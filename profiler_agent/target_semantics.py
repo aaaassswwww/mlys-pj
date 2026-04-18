@@ -17,7 +17,6 @@ _INTRINSIC_MICROBENCH_TARGETS = {
     "shared_peak_bandwidth_gbps",
     "global_peak_bandwidth_gbps",
     "l2_cache_capacity_kb",
-    "actual_boost_clock_mhz",
     "shmem_bank_conflict_penalty_cycles",
     "max_shmem_per_block_kb",
 }
@@ -27,6 +26,8 @@ _INTRINSIC_MICROBENCH_TARGETS = {
 class TargetSemanticInfo:
     target: str
     semantic_class: str
+    semantic_subclass: str
+    measurement_mode_candidate: str
     workload_dependent: bool
     route_reason: str
 
@@ -42,6 +43,8 @@ def classify_target(target: str) -> TargetSemanticInfo:
         return TargetSemanticInfo(
             target=normalized,
             semantic_class="device_attribute",
+            semantic_subclass="device_attribute",
+            measurement_mode_candidate="device_attribute_query",
             workload_dependent=False,
             route_reason="device_attribute_name_pattern",
         )
@@ -49,7 +52,9 @@ def classify_target(target: str) -> TargetSemanticInfo:
     if normalized in _INTRINSIC_MICROBENCH_TARGETS:
         return TargetSemanticInfo(
             target=normalized,
-            semantic_class="intrinsic_microbench",
+            semantic_class="intrinsic_probe",
+            semantic_subclass="intrinsic_microbench",
+            measurement_mode_candidate="synthetic_intrinsic_probe",
             workload_dependent=False,
             route_reason="registered_intrinsic_target",
         )
@@ -62,7 +67,9 @@ def classify_target(target: str) -> TargetSemanticInfo:
     ):
         return TargetSemanticInfo(
             target=normalized,
-            semantic_class="runtime_throughput_counter",
+            semantic_class="workload_counter",
+            semantic_subclass="runtime_throughput_counter",
+            measurement_mode_candidate="workload_profile",
             workload_dependent=True,
             route_reason="runtime_counter_name_pattern",
         )
@@ -70,7 +77,9 @@ def classify_target(target: str) -> TargetSemanticInfo:
     if "__" in lowered:
         return TargetSemanticInfo(
             target=normalized,
-            semantic_class="ncu_counter",
+            semantic_class="workload_counter",
+            semantic_subclass="ncu_counter",
+            measurement_mode_candidate="workload_profile",
             workload_dependent=True,
             route_reason="ncu_counter_name_pattern",
         )
@@ -78,6 +87,8 @@ def classify_target(target: str) -> TargetSemanticInfo:
     return TargetSemanticInfo(
         target=normalized,
         semantic_class="unknown",
+        semantic_subclass="unknown",
+        measurement_mode_candidate="conservative_fallback",
         workload_dependent=False,
         route_reason="fallback_unknown_semantics",
     )

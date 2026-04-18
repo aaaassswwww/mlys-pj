@@ -30,18 +30,18 @@
         "selected_source": "nvml_sm_clock_median"
       },
       "dram_latency_cycles": {
-        "fusion_confidence": 0.0,
-        "fusion_method": "no_signal_default",
+        "fusion_confidence": null,
+        "fusion_method": null,
         "selected_source": "fallback_default"
       },
       "l2_cache_capacity_kb": {
-        "fusion_confidence": 0.0,
-        "fusion_method": "no_signal_default",
+        "fusion_confidence": null,
+        "fusion_method": null,
         "selected_source": "fallback_default"
       },
       "max_shmem_per_block_kb": {
-        "fusion_confidence": 0.0,
-        "fusion_method": "no_signal_default",
+        "fusion_confidence": null,
+        "fusion_method": null,
         "selected_source": "fallback_default"
       }
     }

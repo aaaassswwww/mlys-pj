@@ -5,7 +5,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from profiler_agent.tool_adapters.microbench_adapter import measure_metric_with_evidence
+from profiler_agent.tool_adapters.microbench_adapter import (
+    compile_probe_source,
+    measure_metric_with_evidence,
+    profile_probe_with_ncu,
+    run_probe_binary,
+)
 
 
 class MicrobenchAdapterTests(unittest.TestCase):
@@ -108,6 +113,39 @@ class MicrobenchAdapterTests(unittest.TestCase):
         self.assertIn("__clock64", result.compile_stderr_tail)
         self.assertEqual(result.compile_returncode, 1)
         self.assertIsInstance(result.compile_command, list)
+
+    @patch("profiler_agent.tool_adapters.microbench_adapter._compile_probe")
+    def test_compile_probe_source_returns_typed_stage_result(self, mock_compile_probe: unittest.mock.Mock) -> None:
+        mock_compile_probe.return_value = (0, "compiled", "", ["nvcc", "probe.cu", "-o", "probe.exe"])
+        stage = compile_probe_source(Path("probe.cu"), Path("probe.exe"))
+        self.assertTrue(stage.ok)
+        self.assertEqual(stage.returncode, 0)
+        self.assertEqual(stage.command[0], "nvcc")
+
+    @patch("profiler_agent.tool_adapters.microbench_adapter._run_probe")
+    def test_run_probe_binary_returns_typed_stage_result(self, mock_run_probe: unittest.mock.Mock) -> None:
+        mock_run_probe.return_value = (0, "ok", "", ["probe.exe"])
+        stage = run_probe_binary(Path("probe.exe"))
+        self.assertTrue(stage.ok)
+        self.assertEqual(stage.stdout_tail, "ok")
+
+    @patch("profiler_agent.tool_adapters.microbench_adapter.query_metric_with_evidence")
+    def test_profile_probe_with_ncu_returns_typed_stage_result(self, mock_query: unittest.mock.Mock) -> None:
+        from profiler_agent.tool_adapters.ncu_adapter import NcuQueryResult
+
+        mock_query.return_value = NcuQueryResult(
+            value=12.0,
+            source="ncu_csv",
+            returncode=0,
+            parse_mode="csv_metric_row",
+            command=["ncu", "--metrics", "dram_latency_cycles", "probe.exe"],
+            stdout_tail="csv",
+            stderr_tail="",
+        )
+        stage = profile_probe_with_ncu("dram_latency_cycles", Path("probe.exe"))
+        self.assertTrue(stage.ok)
+        self.assertEqual(stage.value, 12.0)
+        self.assertEqual(stage.source, "ncu_csv")
 
 
 if __name__ == "__main__":

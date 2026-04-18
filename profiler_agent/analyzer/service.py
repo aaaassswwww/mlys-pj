@@ -4,6 +4,7 @@ from typing import Any
 
 from profiler_agent.analyzer.bound_classifier import analyze_bound
 from profiler_agent.analyzer.llm_reasoner import build_llm_analysis
+from profiler_agent.report_summary import build_intrinsic_probe_report
 
 
 def _apply_detector_penalty(analysis: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
@@ -44,6 +45,29 @@ def build_analysis(results: dict[str, float], evidence: dict[str, Any]) -> dict[
                         metrics[candidate_name] = float(candidate_value)
 
     baseline = analyze_bound(metrics).to_dict()
+    workload_placeholders = evidence.get("workload_placeholders")
+    if isinstance(workload_placeholders, dict):
+        placeholder_targets = workload_placeholders.get("targets")
+        if isinstance(placeholder_targets, list) and placeholder_targets:
+            baseline["workload_placeholder_targets"] = [str(item) for item in placeholder_targets]
+            baseline["workload_placeholder_count"] = len(placeholder_targets)
+            notes = baseline.get("analysis_notes")
+            if not isinstance(notes, list):
+                notes = []
+            notes.append(
+                "workload_dependent_targets_without_run_were_left_as_placeholder_zero_values_and_excluded_from_observed_metrics"
+            )
+            baseline["analysis_notes"] = notes
+    intrinsic_probe_report = build_intrinsic_probe_report(evidence)
+    if intrinsic_probe_report.get("count", 0):
+        baseline["intrinsic_probe_report"] = intrinsic_probe_report
+        notes = baseline.get("analysis_notes")
+        if not isinstance(notes, list):
+            notes = []
+        notes.append(
+            "intrinsic_probe_report_summarizes_acceptance_reason_ncu_usage_and_semantic_validity_for_synthetic_probe_targets"
+        )
+        baseline["analysis_notes"] = notes
     llm_analysis = build_llm_analysis(results=results, evidence=evidence, baseline_analysis=baseline)
 
     if llm_analysis is None:

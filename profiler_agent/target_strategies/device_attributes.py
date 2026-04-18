@@ -15,6 +15,8 @@ class DeviceAttributeStrategy(TargetStrategy):
             "strategy": self.name,
             "selected_source": "device_attribute_query" if query["value"] is not None else "fallback_default",
             "semantic": semantic.to_evidence(),
+            "measurement_mode": "device_attribute_query",
+            "semantic_validity": "direct",
             "workload_requirement": {
                 "workload_dependent": semantic.workload_dependent,
                 "status": "not_required",

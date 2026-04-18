@@ -8,6 +8,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from profiler_agent.orchestrator.pipeline import execute
+from profiler_agent.probe_iteration import ProbeIterationResult, ProbeIterationState
 from profiler_agent.schema.target_spec_schema import TargetSpec
 from profiler_agent.tool_adapters.binary_runner import RunResult
 from profiler_agent.tool_adapters.microbench_adapter import ProbeResult
@@ -45,6 +46,77 @@ def _mk_probe(
         median_value=median,
         std_value=std,
         run_values=None,
+    )
+
+
+def _mk_probe_iteration_result(
+    value: float | None = None,
+    source: str = "microbench_probe",
+    sample_count: int | None = None,
+    best: float | None = None,
+    median: float | None = None,
+    std: float | None = None,
+) -> ProbeIterationResult:
+    state = ProbeIterationState(
+        target="dram_latency_cycles",
+        iteration=1,
+        generation_attempts=1,
+        compile_history=[],
+        run_history=[],
+        profile_history=[],
+        analysis_history=[],
+        done=value is not None,
+        best_measurement=value,
+    )
+    return ProbeIterationResult(
+        value=value,
+        source=source,
+        confidence=0.9 if value is not None else 0.0,
+        state=state,
+        evidence={
+            "measurement_mode": "synthetic_intrinsic_probe",
+            "semantic_validity": "intrinsic_proxy",
+            "probe_iteration": {
+                "iteration_count": 1,
+                "final_decision": "accept_measurement" if value is not None else "change_probe_shape",
+                "accepted_round": 1 if value is not None else None,
+                "state": {
+                    "target": state.target,
+                    "iteration": state.iteration,
+                    "generation_attempts": state.generation_attempts,
+                    "compile_history": [],
+                    "run_history": [],
+                    "profile_history": [],
+                    "analysis_history": [],
+                    "done": state.done,
+                    "best_measurement": state.best_measurement,
+                },
+            },
+            "probe": {
+                "source": source,
+                "compile_returncode": 0 if value is not None else 127,
+                "run_returncode": 0 if value is not None else 127,
+                "parsed_from": "structured_metric_value" if value is not None else "none",
+                "metric_name": "dram_latency_cycles",
+                "sample_count": sample_count,
+                "best_value": best,
+                "median_value": median,
+                "std_value": std,
+                "run_values": None,
+                "compile_stderr_tail": "" if value is not None else "nvcc_not_found",
+                "run_stderr_tail": "",
+                "compile_stdout_tail": "",
+                "run_stdout_tail": "",
+                "compile_command": None,
+                "run_command": None,
+                "source_path": None,
+                "generation_source": "llm_generated",
+                "generation_attempts": 1,
+                "generation_error": "" if value is not None else "nvcc_not_found",
+                "generation_trace": [],
+            },
+            "confidence": 0.9 if value is not None else 0.0,
+        },
     )
 
 
@@ -156,8 +228,15 @@ class GoldenFixtureTests(unittest.TestCase):
                     return_value=RunResult(command=spec.run, returncode=0, stdout="ok", stderr=""),
                 ),
                 patch(
-                    "profiler_agent.target_strategies.probe_first_base.measure_metric_with_evidence",
-                    side_effect=probe_first,
+                    "profiler_agent.target_strategies.probe_first_base.run_probe_iteration",
+                    side_effect=lambda target, run_cmd: _mk_probe_iteration_result(
+                        value=probe_first(target, run_cmd).value,
+                        source=probe_first(target, run_cmd).source,
+                        sample_count=probe_first(target, run_cmd).sample_count,
+                        best=probe_first(target, run_cmd).best_value,
+                        median=probe_first(target, run_cmd).median_value,
+                        std=probe_first(target, run_cmd).std_value,
+                    ),
                 ),
                 patch(
                     "profiler_agent.target_strategies.generic.measure_metric_with_evidence",

@@ -35,7 +35,17 @@ class PipelineSmokeTests(unittest.TestCase):
             self.assertIn("detectors", evidence)
             self.assertEqual(
                 evidence["targets"]["dram_latency_cycles"]["semantic"]["semantic_class"],
-                "intrinsic_microbench",
+                "intrinsic_probe",
+            )
+            self.assertEqual(
+                evidence["targets"]["dram_latency_cycles"]["measurement_mode"],
+                "synthetic_intrinsic_probe",
+            )
+            self.assertEqual(evidence["intrinsic_probe_report"]["count"], 1)
+            self.assertEqual(evidence["intrinsic_probe_report"]["targets"][0]["target"], "dram_latency_cycles")
+            self.assertEqual(
+                evidence["intrinsic_probe_report"]["targets"][0]["semantic_validity"],
+                "intrinsic_proxy",
             )
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
@@ -58,6 +68,31 @@ class PipelineSmokeTests(unittest.TestCase):
             self.assertEqual(
                 evidence["targets"]["dram_latency_cycles"]["workload_requirement"]["status"],
                 "not_required",
+            )
+            self.assertEqual(
+                evidence["targets"]["dram_latency_cycles"]["semantic_validity"],
+                "intrinsic_proxy",
+            )
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    def test_execute_without_run_marks_workload_counter_placeholders(self) -> None:
+        spec = TargetSpec(
+            targets=["dram__bytes_read.sum.per_second"],
+            run="",
+        )
+        out_dir = Path("tests/.tmp") / f"smoke_placeholder_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            output = execute(spec, out_dir)
+            evidence = json.loads(output.evidence_path.read_text(encoding="utf-8"))
+            analysis = json.loads(output.analysis_path.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["workload_placeholders"]["count"], 1)
+            self.assertIn("dram__bytes_read.sum.per_second", evidence["workload_placeholders"]["targets"])
+            self.assertEqual(analysis["workload_placeholder_count"], 1)
+            self.assertIn(
+                "workload_dependent_targets_without_run_were_left_as_placeholder_zero_values_and_excluded_from_observed_metrics",
+                analysis["analysis_notes"],
             )
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
@@ -88,6 +123,7 @@ class PipelineSmokeTests(unittest.TestCase):
             evidence = json.loads(output.evidence_path.read_text(encoding="utf-8"))
             self.assertEqual(evidence["targets"]["launch__sm_count"]["strategy"], "device_attribute_strategy")
             self.assertEqual(evidence["targets"]["launch__sm_count"]["semantic"]["semantic_class"], "device_attribute")
+            self.assertEqual(evidence["targets"]["launch__sm_count"]["measurement_mode"], "device_attribute_query")
             self.assertEqual(
                 evidence["targets"]["launch__sm_count"]["tools"]["device_attribute_query"]["source"],
                 "cuda_runtime_attribute",

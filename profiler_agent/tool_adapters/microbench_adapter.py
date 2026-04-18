@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from profiler_agent.codegen.generator import ProbeCodeGenerator
+from profiler_agent.tool_adapters.ncu_adapter import query_metric_with_evidence
 
 
 _NUMERIC_RE = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
@@ -52,6 +53,42 @@ class ProbeResult:
     generation_attempts: Optional[int] = None
     generation_error: Optional[str] = None
     generation_trace: Optional[list[dict[str, object]]] = None
+    profile_source: Optional[str] = None
+    profile_returncode: Optional[int] = None
+    profile_parse_mode: Optional[str] = None
+    profile_command: Optional[list[str] | str] = None
+    profile_stdout_tail: Optional[str] = None
+    profile_stderr_tail: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CompileStageResult:
+    ok: bool
+    returncode: int
+    command: list[str]
+    stdout_tail: str
+    stderr_tail: str
+
+
+@dataclass(frozen=True)
+class RunStageResult:
+    ok: bool
+    returncode: int
+    command: list[str]
+    stdout_tail: str
+    stderr_tail: str
+
+
+@dataclass(frozen=True)
+class ProfileStageResult:
+    ok: bool
+    source: str
+    returncode: int
+    parse_mode: str
+    command: list[str]
+    stdout_tail: str
+    stderr_tail: str
+    value: Optional[float] = None
 
 
 def _repo_root() -> Path:
@@ -117,6 +154,8 @@ def _parse_probe_output(metric_name: str, stdout: str) -> tuple[Optional[float],
                 samples = _extract_last_numeric(kv["samples"])
                 if samples is not None:
                     meta["sample_count"] = int(samples)
+            if "mode" in kv and kv["mode"]:
+                meta["mode"] = kv["mode"]
             if "best" in kv:
                 best = _extract_last_numeric(kv["best"])
                 if best is not None:
@@ -194,6 +233,53 @@ def _run_probe(binary: Path) -> tuple[int, str, str, list[str]]:
     return completed.returncode, completed.stdout, completed.stderr, [str(binary)]
 
 
+def _quote_run_target(path: Path) -> str:
+    text = str(path)
+    return f'"{text}"' if " " in text else text
+
+
+def compile_probe_source(source: Path, binary: Path) -> CompileStageResult:
+    returncode, stdout, stderr, command = _normalize_compile_result(
+        _compile_probe(source, binary),
+        fallback_command=["nvcc", str(source), "-o", str(binary)],
+    )
+    return CompileStageResult(
+        ok=returncode == 0,
+        returncode=returncode,
+        command=command,
+        stdout_tail=(stdout or "")[-1000:],
+        stderr_tail=(stderr or "")[-1000:],
+    )
+
+
+def run_probe_binary(binary: Path) -> RunStageResult:
+    returncode, stdout, stderr, command = _normalize_run_result(
+        _run_probe(binary),
+        fallback_command=[str(binary)],
+    )
+    return RunStageResult(
+        ok=returncode == 0,
+        returncode=returncode,
+        command=command,
+        stdout_tail=(stdout or "")[-1000:],
+        stderr_tail=(stderr or "")[-1000:],
+    )
+
+
+def profile_probe_with_ncu(metric_name: str, binary: Path) -> ProfileStageResult:
+    query = query_metric_with_evidence(metric_name=metric_name, run_cmd=_quote_run_target(binary))
+    return ProfileStageResult(
+        ok=query.returncode == 0 and query.source == "ncu_csv",
+        source=query.source,
+        returncode=query.returncode,
+        parse_mode=query.parse_mode,
+        command=list(query.command or []),
+        stdout_tail=query.stdout_tail,
+        stderr_tail=query.stderr_tail,
+        value=query.value,
+    )
+
+
 def _probe_repeat_count() -> int:
     raw = os.environ.get("PROFILER_AGENT_PROBE_REPEAT")
     if raw is None:
@@ -239,10 +325,21 @@ def _disable_static_fallback() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _profile_generated_probe_enabled(metric_name: str, force_profile: bool = False) -> bool:
+    if force_profile:
+        return True
+    raw = os.environ.get("PROFILER_AGENT_PROFILE_GENERATED_PROBE", "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    lowered = (metric_name or "").strip().lower()
+    return "__" in lowered
+
+
 def _select_probe_source(
     *,
     metric_name: str,
     run_cmd: str,
+    prior_error: str | None = None,
 ) -> tuple[Optional[Path], str, int, str, list[dict[str, object]]]:
     _ = run_cmd
     mode = _probe_source_mode()
@@ -265,10 +362,10 @@ def _select_probe_source(
             )
         else:
             out_dir = _repo_root() / "outputs" / "generated_probes"
-            prior_error: str | None = None
+            llm_prior_error = prior_error
             for _ in range(retries + 1):
                 attempts += 1
-                gen = generator.generate_probe(metric=metric_name, out_dir=out_dir, prior_error=prior_error)
+                gen = generator.generate_probe(metric=metric_name, out_dir=out_dir, prior_error=llm_prior_error)
                 generation_trace.append(
                     {
                         "attempt": attempts,
@@ -276,13 +373,13 @@ def _select_probe_source(
                         "ok": bool(gen.ok),
                         "error": gen.error,
                         "source_path": str(gen.source_path),
-                        "has_prior_error": bool(prior_error),
+                        "has_prior_error": bool(llm_prior_error),
                     }
                 )
                 if gen.ok:
                     return gen.source_path, gen.source_type, attempts, "", generation_trace
                 last_error = gen.error
-                prior_error = gen.error
+                llm_prior_error = gen.error or llm_prior_error
         if _disable_static_fallback():
             generation_trace.append(
                 {
@@ -311,10 +408,16 @@ def _select_probe_source(
     return source, "static_probe", attempts, last_error, generation_trace
 
 
-def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
+def measure_metric_with_evidence(
+    metric_name: str,
+    run_cmd: str,
+    prior_error: str | None = None,
+    force_profile: bool = False,
+) -> ProbeResult:
     source, source_type, generation_attempts, generation_error, generation_trace = _select_probe_source(
         metric_name=metric_name,
         run_cmd=run_cmd,
+        prior_error=prior_error,
     )
     if source is None:
         result_source = "unsupported_metric"
@@ -337,6 +440,12 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             generation_attempts=generation_attempts,
             generation_error=generation_error or "probe_source_missing",
             generation_trace=generation_trace,
+            profile_source="skipped_source_missing",
+            profile_returncode=0,
+            profile_parse_mode="none",
+            profile_command=None,
+            profile_stdout_tail="",
+            profile_stderr_tail="",
         )
 
     binary = (
@@ -363,12 +472,19 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             generation_attempts=generation_attempts,
             generation_error=generation_error or "probe_source_path_not_found",
             generation_trace=generation_trace,
+            profile_source="skipped_source_missing",
+            profile_returncode=0,
+            profile_parse_mode="none",
+            profile_command=None,
+            profile_stdout_tail="",
+            profile_stderr_tail="",
         )
 
-    compile_rc, compile_out, compile_err, compile_argv = _normalize_compile_result(
-        _compile_probe(source, binary),
-        fallback_command=["nvcc", str(source), "-o", str(binary)],
-    )
+    compile_stage = compile_probe_source(source, binary)
+    compile_rc = compile_stage.returncode
+    compile_out = compile_stage.stdout_tail
+    compile_err = compile_stage.stderr_tail
+    compile_argv = compile_stage.command
     # If LLM-generated source fails to compile, attempt one or more repairs.
     if compile_rc != 0 and source_type == "llm_generated":
         generator = ProbeCodeGenerator()
@@ -386,10 +502,11 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
                 generation_error = fix.error
                 continue
             source = fix.source_path
-            compile_rc, compile_out, compile_err, compile_argv = _normalize_compile_result(
-                _compile_probe(source, binary),
-                fallback_command=["nvcc", str(source), "-o", str(binary)],
-            )
+            compile_stage = compile_probe_source(source, binary)
+            compile_rc = compile_stage.returncode
+            compile_out = compile_stage.stdout_tail
+            compile_err = compile_stage.stderr_tail
+            compile_argv = compile_stage.command
             if compile_rc == 0:
                 generation_error = ""
                 break
@@ -418,6 +535,12 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             generation_attempts=generation_attempts,
             generation_error=generation_error or env_hint or compile_diag[-500:],
             generation_trace=generation_trace,
+            profile_source="skipped_compile_failed",
+            profile_returncode=0,
+            profile_parse_mode="none",
+            profile_command=None,
+            profile_stdout_tail="",
+            profile_stderr_tail="",
         )
 
     repeat = _probe_repeat_count()
@@ -429,12 +552,23 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
     run_err = ""
     run_rc = 0
     run_argv: list[str] | None = None
+    profile_stage = ProfileStageResult(
+        ok=False,
+        source="skipped_not_requested",
+        returncode=0,
+        parse_mode="none",
+        command=[],
+        stdout_tail="",
+        stderr_tail="",
+        value=None,
+    )
 
     for _ in range(repeat):
-        run_rc, run_out, run_err, run_argv = _normalize_run_result(
-            _run_probe(binary),
-            fallback_command=[str(binary)],
-        )
+        run_stage = run_probe_binary(binary)
+        run_rc = run_stage.returncode
+        run_out = run_stage.stdout_tail
+        run_err = run_stage.stderr_tail
+        run_argv = run_stage.command
         if run_rc != 0:
             return ProbeResult(
                 value=None,
@@ -454,6 +588,12 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
                 generation_attempts=generation_attempts,
                 generation_error=generation_error,
                 generation_trace=generation_trace,
+                profile_source="skipped_run_failed",
+                profile_returncode=0,
+                profile_parse_mode="none",
+                profile_command=None,
+                profile_stdout_tail="",
+                profile_stderr_tail="",
             )
 
         value, parsed_from, meta = _parse_probe_output(metric_name=metric_name, stdout=run_out or "")
@@ -464,6 +604,9 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             run_stds.append(float(meta["std_value"]))
         if metric_name_seen is None and meta.get("metric_name") is not None:
             metric_name_seen = str(meta.get("metric_name"))
+
+    if _profile_generated_probe_enabled(metric_name, force_profile=force_profile):
+        profile_stage = profile_probe_with_ncu(metric_name=metric_name, binary=binary)
 
     if run_values:
         aggregate_value = float(statistics.median(run_values))
@@ -493,6 +636,12 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             generation_attempts=generation_attempts,
             generation_error=generation_error,
             generation_trace=generation_trace,
+            profile_source=profile_stage.source,
+            profile_returncode=profile_stage.returncode,
+            profile_parse_mode=profile_stage.parse_mode,
+            profile_command=profile_stage.command,
+            profile_stdout_tail=profile_stage.stdout_tail,
+            profile_stderr_tail=profile_stage.stderr_tail,
         )
 
     # Parse failed across all runs; preserve parser-level hints when available.
@@ -520,6 +669,12 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
         generation_attempts=generation_attempts,
         generation_error=generation_error,
         generation_trace=generation_trace,
+        profile_source=profile_stage.source,
+        profile_returncode=profile_stage.returncode,
+        profile_parse_mode=profile_stage.parse_mode,
+        profile_command=profile_stage.command,
+        profile_stdout_tail=profile_stage.stdout_tail,
+        profile_stderr_tail=profile_stage.stderr_tail,
     )
 
 

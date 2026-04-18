@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from profiler_agent.probe_iteration import run_probe_iteration
 from profiler_agent.target_semantics import classify_target
 from profiler_agent.fusion.cross_verify import Candidate, fuse_candidates
 from profiler_agent.target_strategies.base import MeasureContext, MeasureResult, TargetStrategy
@@ -64,6 +65,22 @@ class GenericMetricStrategy(TargetStrategy):
 
     def measure(self, ctx: MeasureContext) -> MeasureResult:
         semantic = ctx.target_semantic or classify_target(ctx.target)
+        if semantic.semantic_class == "intrinsic_probe":
+            iteration = run_probe_iteration(target=ctx.target, run_cmd=ctx.run_cmd)
+            evidence = {
+                "strategy": self.name,
+                "semantic": semantic.to_evidence(),
+                "measurement_mode": "synthetic_intrinsic_probe",
+                "semantic_validity": "intrinsic_proxy",
+                "workload_requirement": {
+                    "workload_dependent": semantic.workload_dependent,
+                    "status": "not_required",
+                },
+                "selected_source": "synthetic_intrinsic_probe" if iteration.value is not None else "fallback_default",
+                **iteration.evidence,
+                "run_returncode": ctx.run_returncode,
+            }
+            return MeasureResult(value=float(iteration.value or 0.0), evidence=evidence)
         candidates: list[Candidate] = []
         candidate_values: dict[str, float] = {}
         candidate_reliability: dict[str, float] = {}
@@ -78,7 +95,7 @@ class GenericMetricStrategy(TargetStrategy):
         ncu_stderr_tail = ""
         ncu_stdout_tail = ""
         ncu_reliability = 0.0
-        can_use_ncu = semantic.semantic_class in {"ncu_counter", "runtime_throughput_counter"}
+        can_use_ncu = semantic.semantic_class == "workload_counter"
         if semantic.workload_dependent and not (ctx.run_cmd or "").strip():
             ncu_source = "workload_run_missing"
             ncu_stderr_tail = "run_skipped_no_command"
@@ -132,7 +149,7 @@ class GenericMetricStrategy(TargetStrategy):
         probe_run_stdout_tail = ""
         probe_compile_command = None
         probe_run_command = None
-        can_use_probe = semantic.semantic_class in {"intrinsic_microbench", "unknown"}
+        can_use_probe = semantic.semantic_class == "unknown"
         if semantic.workload_dependent and not (ctx.run_cmd or "").strip():
             probe_source = "workload_run_missing"
         elif can_use_probe:
@@ -210,6 +227,16 @@ class GenericMetricStrategy(TargetStrategy):
         evidence = {
             "strategy": self.name,
             "semantic": semantic.to_evidence(),
+            "measurement_mode": (
+                "placeholder_no_run"
+                if semantic.workload_dependent and workload_status == "missing_run_command"
+                else "workload_profile" if semantic.semantic_class == "workload_counter" else "conservative_fallback"
+            ),
+            "semantic_validity": (
+                "unobserved_placeholder"
+                if semantic.workload_dependent and workload_status == "missing_run_command"
+                else "direct" if semantic.semantic_class == "workload_counter" else "intrinsic_proxy"
+            ),
             "workload_requirement": {
                 "workload_dependent": semantic.workload_dependent,
                 "status": workload_status,

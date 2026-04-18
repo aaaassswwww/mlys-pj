@@ -334,22 +334,6 @@ class ExecutorAgent:
             content={"tools": list(outputs.keys()), "tool_targets": tool_targets},
         )
 
-    def execute_pipeline(self, state: MultiAgentState, out_dir: Path) -> AgentMessage:
-        spec = TargetSpec(targets=list(state.request.targets), run=state.request.run)
-        output = execute(spec=spec, out_dir=out_dir)
-        state.outputs["pipeline"] = {
-            "results_path": str(output.results_path),
-            "evidence_path": str(output.evidence_path),
-            "analysis_path": str(output.analysis_path),
-            "run_returncode": output.run_result.returncode,
-        }
-        return AgentMessage(
-            sender=self.name,
-            recipient="interpreter_agent",
-            action="pipeline_done",
-            content=dict(state.outputs["pipeline"]),
-        )
-
     def execute_step(self, step: ExecutionStep, state: MultiAgentState, out_dir: Path) -> AgentMessage:
         if step.action == "run_tools":
             return self.run_tools(state=state, step=step)
@@ -360,4 +344,28 @@ class ExecutorAgent:
                 action="noop",
                 content={"step_id": step.id, "action": step.action},
             )
-        return self.execute_pipeline(state=state, out_dir=out_dir)
+        return self.execute_pipeline_with_step(step=step, state=state, out_dir=out_dir)
+
+    def execute_pipeline_with_step(self, step: ExecutionStep, state: MultiAgentState, out_dir: Path) -> AgentMessage:
+        payload = step.payload or {}
+        targets = payload.get("targets")
+        if not isinstance(targets, list) or not targets:
+            targets = list(state.request.targets)
+        else:
+            targets = [str(item) for item in targets if str(item).strip()]
+        run_cmd = str(payload.get("run") or state.request.run)
+        spec = TargetSpec(targets=targets, run=run_cmd)
+        output = execute(spec=spec, out_dir=out_dir)
+        state.outputs["pipeline"] = {
+            "results_path": str(output.results_path),
+            "evidence_path": str(output.evidence_path),
+            "analysis_path": str(output.analysis_path),
+            "run_returncode": output.run_result.returncode,
+            "targets": list(targets),
+        }
+        return AgentMessage(
+            sender=self.name,
+            recipient="interpreter_agent",
+            action="pipeline_done",
+            content=dict(state.outputs["pipeline"]),
+        )

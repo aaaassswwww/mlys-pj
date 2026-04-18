@@ -162,7 +162,27 @@ class MultiAgentFrameworkTests(unittest.TestCase):
             result = coordinator.run(request)
             self.assertEqual(result.outputs["iteration_control"]["executed_rounds"], 1)
             completed = [msg for msg in result.trace if msg.action == "iteration_completed"]
-            self.assertEqual(completed[-1].content["decision_reason"], "rerun_requested_but_run_command_missing")
+            self.assertEqual(completed[-1].content["decision_reason"], "no_run_input_finalized_with_placeholders")
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    @patch("profiler_agent.multi_agent.executor.execute", side_effect=_fake_execute)
+    def test_multi_agent_second_round_can_focus_targets(self, _mock_execute: unittest.mock.Mock) -> None:
+        out_dir = Path("tests/.tmp") / f"ma_focus_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            coordinator = MultiAgentCoordinator()
+            request = MultiAgentRequest(
+                targets=["dram_latency_cycles", "dram__bytes_read.sum.per_second"],
+                run="cmd /c echo x",
+                objective="collect more signal",
+                out_dir=out_dir,
+            )
+            result = coordinator.run(request)
+            second_round = result.outputs["iterations"][1]
+            self.assertEqual(second_round["planned_targets"], ["dram__bytes_read.sum.per_second"])
+            self.assertEqual(second_round["next_targets"], ["dram__bytes_read.sum.per_second"])
+            self.assertIn("refinement_requested_target_focus", second_round["round_directive"]["reasons"])
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 

@@ -46,6 +46,29 @@ class _FallbackLLMClient:
         return None
 
 
+class _NaturalLanguageNextActionLLMClient:
+    def is_enabled(self) -> bool:
+        return True
+
+    def complete_json(self, *, system_prompt: str, user_prompt: str) -> dict | None:
+        _ = user_prompt
+        if "intent router" in system_prompt:
+            return {"intent": "gpu_profiling"}
+        if "planning assistant" in system_prompt:
+            return {"selected_tools": ["executor", "microbench"]}
+        if "concise GPU profiling interpreter" in system_prompt:
+            return {"explanation": "Need more signal.", "risk_level": "medium"}
+        if "You propose next profiling actions" in system_prompt:
+            return {
+                "next_actions": [
+                    "Profile SM efficiency metrics",
+                    "Measure DRAM utilization rates",
+                    "Assess compute and memory throughput",
+                ]
+            }
+        return None
+
+
 def _fake_execute(spec, out_dir: Path) -> PipelineOutput:
     _ = spec
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +151,28 @@ class MultiAgentLlmUsageTests(unittest.TestCase):
             self.assertEqual(refinement_ready.content["source"], "rules")
             self.assertEqual(refinement_ready.content["refinement_fallback_reason"], "llm_missing_next_actions")
             self.assertTrue(refinement_ready.content["llm_attempted"])
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    @patch("profiler_agent.multi_agent.executor.execute", side_effect=_fake_execute)
+    def test_natural_language_next_actions_trigger_second_round_ncu_focus(
+        self,
+        _mock_execute: unittest.mock.Mock,
+    ) -> None:
+        out_dir = Path("tests/.tmp") / f"ma_llm_nl_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            request = MultiAgentRequest(
+                targets=["dram_latency_cycles"],
+                run="cmd /c echo x",
+                objective="collect more signal",
+                out_dir=out_dir,
+            )
+            coordinator = MultiAgentCoordinator(llm_client=_NaturalLanguageNextActionLLMClient())
+            result = coordinator.run(request)
+            self.assertEqual(result.outputs["iteration_control"]["executed_rounds"], 2)
+            self.assertIn("ncu", result.outputs["iterations"][1]["selected_tools"])
+            self.assertIn("next_actions_requested_ncu_focus", result.outputs["iterations"][1]["round_directive"]["reasons"])
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 

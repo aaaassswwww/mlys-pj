@@ -33,7 +33,7 @@ class CodegenGeneratorTests(unittest.TestCase):
                     "#include <cuda_runtime.h>\n"
                     "__global__ void k(){}\n"
                     "int main(){\n"
-                    "printf(\"metric=dram_latency_cycles value=1 samples=1 median=1 best=1 std=0\\n\");\n"
+                    "printf(\"metric=dram_latency_cycles value=1 samples=1 mode=direct median=1 best=1 std=0\\n\");\n"
                     "return 0;\n"
                     "}\n"
                 ),
@@ -60,7 +60,7 @@ class CodegenGeneratorTests(unittest.TestCase):
                 "#include <iostream>\n"
                 "__global__ void k(){}\n"
                 "int main(){\n"
-                "std::cout << \"metric=actual_boost_clock_mhz value=1 samples=1 median=1 best=1 std=0\\n\";\n"
+                "std::cout << \"metric=actual_boost_clock_mhz value=1 samples=1 mode=direct median=1 best=1 std=0\\n\";\n"
                 "return 0;\n"
                 "}\n"
             ),
@@ -83,7 +83,7 @@ class CodegenGeneratorTests(unittest.TestCase):
                     "#include <cuda_runtime.h>\n"
                     "__global__ void k(unsigned long long* out){ out[0] = __clock64(); }\n"
                     "int main(){\n"
-                    "printf(\"metric=actual_boost_clock_mhz value=1 samples=1 median=1 best=1 std=0\\n\");\n"
+                    "printf(\"metric=actual_boost_clock_mhz value=1 samples=1 mode=direct median=1 best=1 std=0\\n\");\n"
                     "return 0;\n"
                     "}\n"
                 ),
@@ -96,6 +96,25 @@ class CodegenGeneratorTests(unittest.TestCase):
             self.assertNotIn("__clock64", text)
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
+
+    def test_generate_probe_requires_mode_field_in_output_protocol(self) -> None:
+        payload = {
+            "metric": "dram_latency_cycles",
+            "filename": "probe.cu",
+            "rationale": "missing mode field",
+            "code": (
+                "#include <cuda_runtime.h>\n"
+                "__global__ void k(){}\n"
+                "int main(){\n"
+                "printf(\"metric=dram_latency_cycles value=1 samples=1 median=1 best=1 std=0\\n\");\n"
+                "return 0;\n"
+                "}\n"
+            ),
+        }
+        gen = ProbeCodeGenerator(llm_client=_FakeLLM(payload))
+        result = gen.generate_probe(metric="dram_latency_cycles", out_dir=Path("tests/.tmp"))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "missing_structured_output_protocol")
 
 
 if __name__ == "__main__":

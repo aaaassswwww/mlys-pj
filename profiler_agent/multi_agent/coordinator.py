@@ -87,21 +87,84 @@ class MultiAgentCoordinator:
         return raw if isinstance(raw, dict) else {}
 
     @staticmethod
+    def _normalized_actions(next_actions: list[object]) -> list[str]:
+        return [str(item).strip().lower() for item in next_actions if str(item).strip()]
+
+    @staticmethod
+    def _normalize_targets(raw_targets: object, request_targets: list[str]) -> list[str]:
+        if not isinstance(raw_targets, list):
+            return []
+        allowed = set(request_targets)
+        normalized: list[str] = []
+        for item in raw_targets:
+            target = str(item).strip()
+            if not target or target not in allowed or target in normalized:
+                continue
+            normalized.append(target)
+        return normalized
+
+    @staticmethod
+    def _matches_any(texts: list[str], patterns: tuple[str, ...]) -> bool:
+        return any(any(pattern in text for pattern in patterns) for text in texts)
+
+    @staticmethod
     def _build_round_directive(state: MultiAgentState) -> dict[str, object]:
         next_actions = state.outputs.get("next_actions", [])
         if not isinstance(next_actions, list):
             next_actions = []
+        focus_targets = MultiAgentCoordinator._normalize_targets(state.outputs.get("next_targets", []), state.request.targets)
+        normalized_actions = MultiAgentCoordinator._normalized_actions(next_actions)
         tool_calls = state.outputs.get("tool_calls", {})
         errors = MultiAgentCoordinator._extract_tool_errors(tool_calls) if isinstance(tool_calls, dict) else []
 
         forced_tools: list[str] = []
         reasons: list[str] = []
-        if any("collect_ncu_" in str(action) or "collect_compute_" in str(action) for action in next_actions):
+        if focus_targets and focus_targets != list(state.request.targets):
+            reasons.append("refinement_requested_target_focus")
+        if MultiAgentCoordinator._matches_any(
+            normalized_actions,
+            (
+                "probe_repair_compile:",
+                "probe_repair_runtime:",
+                "probe_change_probe_shape:",
+                "probe_add_ncu_profile:",
+            ),
+        ):
+            forced_tools.append("microbench")
+            reasons.append("probe_refinement_requested_microbench_rerun")
+        if MultiAgentCoordinator._matches_any(
+            normalized_actions,
+            ("probe_add_ncu_profile:",),
+        ):
+            forced_tools.append("ncu")
+            reasons.append("probe_refinement_requested_ncu_profile")
+        if MultiAgentCoordinator._matches_any(
+            normalized_actions,
+            (
+                "collect_ncu_",
+                "collect_compute_",
+                "profile sm efficiency",
+                "measure dram utilization",
+                "assess compute and memory throughput",
+                "sm efficiency metrics",
+                "compute and memory throughput",
+                "dram utilization rates",
+            ),
+        ):
             forced_tools.append("ncu")
             reasons.append("next_actions_requested_ncu_focus")
-        if any("collect_nsys_" in str(action) for action in next_actions):
+        if MultiAgentCoordinator._matches_any(
+            normalized_actions,
+            ("collect_nsys_", "nsys timeline", "timeline"),
+        ):
             forced_tools.append("nsys")
             reasons.append("next_actions_requested_nsys_focus")
+        if MultiAgentCoordinator._matches_any(
+            normalized_actions,
+            ("frequency data", "gpu and memory frequency", "clock data"),
+        ):
+            forced_tools.append("nvml")
+            reasons.append("next_actions_requested_clock_focus")
         if any(error.get("tool") == "microbench" and error.get("error_type") == "tool_failed" for error in errors):
             forced_tools.append("microbench")
             reasons.append("retry_microbench_after_recoverable_failure")
@@ -111,6 +174,7 @@ class MultiAgentCoordinator:
 
         return {
             "forced_tools": sorted(dict.fromkeys(forced_tools)),
+            "focus_targets": focus_targets or list(state.request.targets),
             "reasons": reasons,
             "source_next_actions": [str(item) for item in next_actions],
         }
@@ -151,6 +215,9 @@ class MultiAgentCoordinator:
         next_actions = state.outputs.get("next_actions")
         if isinstance(next_actions, list):
             record.recommended_next_actions.append([str(item) for item in next_actions])
+        next_targets = self._normalize_targets(state.outputs.get("next_targets", []), state.request.targets)
+        if next_targets:
+            record.recommended_next_targets.append(list(next_targets))
 
         record.done = bool(state.outputs.get("pipeline"))
         record.last_out_dir = str(out_dir)
@@ -171,14 +238,40 @@ class MultiAgentCoordinator:
         next_actions = state.outputs.get("next_actions", [])
         if not isinstance(next_actions, list):
             next_actions = []
+        normalized_actions = MultiAgentCoordinator._normalized_actions(next_actions)
         if (
             not (state.request.run or "").strip()
-            and any("improve_signal_coverage_by_using_realistic_workload_run_command" in str(action) for action in next_actions)
+            and (
+                any("improve_signal_coverage_by_using_realistic_workload_run_command" in str(action) for action in next_actions)
+                or MultiAgentCoordinator._matches_any(
+                    normalized_actions,
+                    (
+                        "profile sm efficiency",
+                        "measure dram utilization",
+                        "assess compute and memory throughput",
+                        "workload command becomes available",
+                    ),
+                )
+            )
         ):
-            return False, "rerun_requested_but_run_command_missing"
+            return False, "no_run_input_finalized_with_placeholders"
         rerun_requested = any(
             any(token in str(action) for token in ("re-run_pipeline", "collect_ncu_", "collect_compute_", "collect_nsys_"))
             for action in next_actions
+        )
+        rerun_requested = rerun_requested or MultiAgentCoordinator._matches_any(
+            normalized_actions,
+            (
+                "probe_repair_compile:",
+                "probe_repair_runtime:",
+                "probe_change_probe_shape:",
+                "probe_add_ncu_profile:",
+                "profile sm efficiency",
+                "measure dram utilization",
+                "assess compute and memory throughput",
+                "frequency data",
+                "gpu and memory frequency",
+            ),
         )
 
         if recoverable_errors:
@@ -186,7 +279,7 @@ class MultiAgentCoordinator:
         if rerun_requested and (state.request.run or "").strip():
             return True, "refinement_requested_rerun"
         if rerun_requested and not (state.request.run or "").strip():
-            return False, "rerun_requested_but_run_command_missing"
+            return False, "no_run_input_finalized_with_placeholders"
         return False, "no_followup_condition_met"
 
     def _run_single_round(
@@ -234,9 +327,11 @@ class MultiAgentCoordinator:
                 "execution_round": execution_round,
                 "selected_tools": list(state.selected_tools),
                 "round_directive": dict(state.round_directive),
+                "planned_targets": list(plan_message.content.get("planned_targets", state.request.targets)),
                 "pipeline": dict(state.outputs.get("pipeline", {})),
                 "interpretation": dict(state.outputs.get("interpretation", {})),
                 "next_actions": list(state.outputs.get("next_actions", [])),
+                "next_targets": list(state.outputs.get("next_targets", [])),
             }
         )
         return plan
