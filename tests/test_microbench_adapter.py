@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from profiler_agent.tool_adapters.microbench_adapter import measure_metric_with_evidence
@@ -82,6 +83,30 @@ class MicrobenchAdapterTests(unittest.TestCase):
         self.assertIsInstance(result.generation_trace, list)
         assert result.generation_trace is not None
         self.assertTrue(any(item.get("error") == "static_fallback_disabled" for item in result.generation_trace))
+
+    @patch("profiler_agent.tool_adapters.microbench_adapter._generated_probe_binary_path")
+    @patch("profiler_agent.tool_adapters.microbench_adapter._compile_probe")
+    @patch("profiler_agent.tool_adapters.microbench_adapter._select_probe_source")
+    def test_compile_failure_surfaces_diagnostic_for_generated_probe(
+        self,
+        mock_select_probe_source: unittest.mock.Mock,
+        mock_compile_probe: unittest.mock.Mock,
+        mock_generated_binary_path: unittest.mock.Mock,
+    ) -> None:
+        mock_select_probe_source.return_value = (
+            Path(os.path.abspath("outputs/generated_probes/actual_boost_clock_mhz/probe.cu")),
+            "llm_generated",
+            1,
+            "",
+            [],
+        )
+        mock_generated_binary_path.return_value = Path(os.path.abspath("outputs/generated_probes/actual_boost_clock_mhz/probe.exe"))
+        mock_compile_probe.return_value = (1, "", 'error: identifier "__clock64" is undefined')
+
+        result = measure_metric_with_evidence("actual_boost_clock_mhz", "dummy")
+        self.assertEqual(result.source, "compile_failed")
+        self.assertIn("__clock64", result.compile_stderr_tail)
+        self.assertEqual(result.compile_returncode, 1)
 
 
 if __name__ == "__main__":

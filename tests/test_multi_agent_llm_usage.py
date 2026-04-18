@@ -29,6 +29,23 @@ class _FakeLLMClient:
         return None
 
 
+class _FallbackLLMClient:
+    def is_enabled(self) -> bool:
+        return True
+
+    def complete_json(self, *, system_prompt: str, user_prompt: str) -> dict | None:
+        _ = user_prompt
+        if "intent router" in system_prompt:
+            return {"intent": "gpu_profiling"}
+        if "planning assistant" in system_prompt:
+            return {"selected_tools": []}
+        if "concise GPU profiling interpreter" in system_prompt:
+            return {}
+        if "You propose next profiling actions" in system_prompt:
+            return {"actions": []}
+        return None
+
+
 def _fake_execute(spec, out_dir: Path) -> PipelineOutput:
     _ = spec
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -76,6 +93,41 @@ class MultiAgentLlmUsageTests(unittest.TestCase):
             self.assertIn("tool_calls", result.outputs)
             self.assertEqual(result.outputs["interpretation"]["llm_risk_level"], "medium")
             self.assertEqual(result.outputs["next_actions"][0], "collect_nsys_timeline")
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    @patch("profiler_agent.multi_agent.executor.execute", side_effect=_fake_execute)
+    def test_coordinator_exposes_llm_fallback_reasons(self, _mock_execute: unittest.mock.Mock) -> None:
+        out_dir = Path("tests/.tmp") / f"ma_llm_fallback_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            request = MultiAgentRequest(
+                targets=["dram_latency_cycles", "actual_boost_clock_mhz"],
+                run="cmd /c echo x",
+                objective="analyze gpu profiling",
+                out_dir=out_dir,
+            )
+            coordinator = MultiAgentCoordinator(llm_client=_FallbackLLMClient())
+            result = coordinator.run(request)
+
+            plan_ready = next(msg for msg in result.trace if msg.action == "plan_ready")
+            interpretation_ready = next(msg for msg in result.trace if msg.action == "interpretation_ready")
+            refinement_ready = next(msg for msg in result.trace if msg.action == "refinement_ready")
+
+            self.assertEqual(plan_ready.content["planning_source"], "rules")
+            self.assertEqual(plan_ready.content["planning_fallback_reason"], "llm_missing_selected_tools")
+            self.assertTrue(plan_ready.content["llm_attempted"])
+
+            self.assertEqual(interpretation_ready.content["interpretation_source"], "rules")
+            self.assertEqual(
+                interpretation_ready.content["interpretation_fallback_reason"],
+                "llm_missing_explanation_and_risk_level",
+            )
+            self.assertTrue(interpretation_ready.content["llm_attempted"])
+
+            self.assertEqual(refinement_ready.content["source"], "rules")
+            self.assertEqual(refinement_ready.content["refinement_fallback_reason"], "llm_missing_next_actions")
+            self.assertTrue(refinement_ready.content["llm_attempted"])
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 

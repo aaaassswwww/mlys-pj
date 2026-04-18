@@ -14,7 +14,12 @@ class RunResult:
 
 
 def run_executable(run_cmd: str, timeout_s: int = 120) -> RunResult:
-    argv = shlex.split(run_cmd, posix=False)
+    try:
+        # Prefer POSIX-style splitting so quoted payloads (e.g. python -c "...") are unwrapped.
+        argv = shlex.split(run_cmd, posix=True)
+    except ValueError:
+        # Fallback for malformed input that still may run with legacy behavior.
+        argv = shlex.split(run_cmd, posix=False)
     completed = subprocess.run(
         argv,
         capture_output=True,

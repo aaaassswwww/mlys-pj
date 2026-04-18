@@ -155,11 +155,18 @@ def _compile_probe(source: Path, binary: Path) -> tuple[int, str, str]:
         str(source),
         "-O3",
         "-std=c++14",
+        "-Xcompiler",
+        "/wd4819",
         "-o",
         str(binary),
     ]
     completed = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=240)
-    return completed.returncode, completed.stdout, completed.stderr
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    # nvcc on Windows may emit fatal host-compiler errors to stdout.
+    if completed.returncode != 0 and not stderr.strip() and stdout.strip():
+        stderr = stdout
+    return completed.returncode, stdout, stderr
 
 
 def _run_probe(binary: Path) -> tuple[int, str, str]:
@@ -361,6 +368,10 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             prior_error = (compile_err or "")[-1500:]
 
     if compile_rc != 0:
+        compile_diag = (compile_err or compile_out or "")[-1000:]
+        env_hint = ""
+        if "cannot find compiler 'cl.exe' in path" in (compile_err or compile_out).lower():
+            env_hint = "missing_windows_host_compiler_cl_exe"
         return ProbeResult(
             value=None,
             source="compile_failed",
@@ -375,7 +386,7 @@ def measure_metric_with_evidence(metric_name: str, run_cmd: str) -> ProbeResult:
             source_path=str(source),
             generation_source=source_type,
             generation_attempts=generation_attempts,
-            generation_error=generation_error or (compile_err or "")[-500:],
+            generation_error=generation_error or env_hint or compile_diag[-500:],
             generation_trace=generation_trace,
         )
 

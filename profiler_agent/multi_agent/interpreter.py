@@ -14,11 +14,42 @@ class InterpreterAgent:
     def __init__(self, llm_client: LLMClient | None = None) -> None:
         self.llm_client = llm_client
 
+    @staticmethod
+    def _normalize_risk_level(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        lowered = value.strip().lower()
+        if lowered in {"low", "medium", "high"}:
+            return lowered
+        aliases = {
+            "med": "medium",
+            "mid": "medium",
+            "moderate": "medium",
+            "critical": "high",
+            "severe": "high",
+        }
+        return aliases.get(lowered)
+
+    @staticmethod
+    def _parse_next_actions(llm_json: dict[str, Any]) -> list[str]:
+        raw = llm_json.get("next_actions")
+        if raw is None:
+            raw = llm_json.get("actions")
+        if raw is None:
+            raw = llm_json.get("recommendations")
+        if isinstance(raw, str):
+            raw = [token.strip() for token in raw.replace(";", ",").split(",")]
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
     def summarize_outputs(self, state: MultiAgentState) -> AgentMessage:
         pipeline = state.outputs.get("pipeline", {})
         analysis_path = pipeline.get("analysis_path")
         summary: dict[str, Any] = {"status": "no_pipeline_output"}
         analysis_obj: dict[str, Any] = {}
+        fallback_reason = "llm_not_enabled"
+        llm_attempted = False
         if isinstance(analysis_path, str) and Path(analysis_path).exists():
             data = json.loads(Path(analysis_path).read_text(encoding="utf-8"))
             analysis_obj = data
@@ -30,6 +61,7 @@ class InterpreterAgent:
             }
 
         if self.llm_client is not None and self.llm_client.is_enabled() and analysis_obj:
+            llm_attempted = True
             system_prompt = (
                 "You are a concise GPU profiling interpreter. Return JSON with keys "
                 "'explanation' (string) and 'risk_level' (low|medium|high)."
@@ -39,17 +71,25 @@ class InterpreterAgent:
                 ensure_ascii=True,
             )
             llm_json = self.llm_client.complete_json(system_prompt=system_prompt, user_prompt=user_prompt)
-            if isinstance(llm_json, dict):
+            if not isinstance(llm_json, dict):
+                fallback_reason = "llm_no_response_or_invalid_json"
+            else:
                 explanation = llm_json.get("explanation")
-                risk_level = llm_json.get("risk_level")
+                risk_level = self._normalize_risk_level(llm_json.get("risk_level"))
                 if isinstance(explanation, str) and explanation.strip():
                     summary["llm_explanation"] = explanation.strip()
-                if isinstance(risk_level, str) and risk_level in {"low", "medium", "high"}:
+                if isinstance(risk_level, str):
                     summary["llm_risk_level"] = risk_level
                 if "llm_explanation" in summary or "llm_risk_level" in summary:
                     summary["interpretation_source"] = "llm"
+                    fallback_reason = ""
+                else:
+                    fallback_reason = "llm_missing_explanation_and_risk_level"
         if "interpretation_source" not in summary:
             summary["interpretation_source"] = "rules"
+        summary["llm_attempted"] = llm_attempted
+        if summary["interpretation_source"] == "rules":
+            summary["interpretation_fallback_reason"] = fallback_reason
 
         state.outputs["interpretation"] = summary
         return AgentMessage(
@@ -63,7 +103,10 @@ class InterpreterAgent:
         interpretation = state.outputs.get("interpretation", {})
         next_actions: list[str] = []
         source = "rules"
+        fallback_reason = "llm_not_enabled"
+        llm_attempted = False
         if self.llm_client is not None and self.llm_client.is_enabled():
+            llm_attempted = True
             system_prompt = (
                 "You propose next profiling actions. Return JSON with key 'next_actions' "
                 "as a list of concise action strings (max 4)."
@@ -77,12 +120,16 @@ class InterpreterAgent:
                 ensure_ascii=True,
             )
             llm_json = self.llm_client.complete_json(system_prompt=system_prompt, user_prompt=user_prompt)
-            llm_actions = llm_json.get("next_actions") if isinstance(llm_json, dict) else None
-            if isinstance(llm_actions, list):
-                parsed_actions = [str(item).strip() for item in llm_actions if str(item).strip()]
+            if not isinstance(llm_json, dict):
+                fallback_reason = "llm_no_response_or_invalid_json"
+            else:
+                parsed_actions = self._parse_next_actions(llm_json)
                 if parsed_actions:
                     next_actions = parsed_actions[:4]
                     source = "llm"
+                    fallback_reason = ""
+                else:
+                    fallback_reason = "llm_missing_next_actions"
 
         if not next_actions:
             source = "rules"
@@ -100,5 +147,10 @@ class InterpreterAgent:
             sender=self.name,
             recipient="coordinator",
             action="refinement_ready",
-            content={"next_actions": next_actions, "source": source},
+            content={
+                "next_actions": next_actions,
+                "source": source,
+                "llm_attempted": llm_attempted,
+                "refinement_fallback_reason": fallback_reason if source == "rules" else "",
+            },
         )

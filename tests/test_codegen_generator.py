@@ -30,6 +30,7 @@ class CodegenGeneratorTests(unittest.TestCase):
                 "filename": "probe.cu",
                 "rationale": "pointer chasing",
                 "code": (
+                    "#include <cuda_runtime.h>\n"
                     "__global__ void k(){}\n"
                     "int main(){\n"
                     "printf(\"metric=dram_latency_cycles value=1 samples=1 median=1 best=1 std=0\\n\");\n"
@@ -48,6 +49,53 @@ class CodegenGeneratorTests(unittest.TestCase):
         gen = ProbeCodeGenerator(llm_client=_FakeLLM({"code": "int main(){return 0;}"}))
         result = gen.generate_probe(metric="dram_latency_cycles", out_dir=Path("tests/.tmp"))
         self.assertFalse(result.ok)
+
+    def test_generate_probe_rejects_nonminimal_cpp_constructs(self) -> None:
+        payload = {
+            "metric": "actual_boost_clock_mhz",
+            "filename": "probe.cu",
+            "rationale": "uses streams",
+            "code": (
+                "#include <cuda_runtime.h>\n"
+                "#include <iostream>\n"
+                "__global__ void k(){}\n"
+                "int main(){\n"
+                "std::cout << \"metric=actual_boost_clock_mhz value=1 samples=1 median=1 best=1 std=0\\n\";\n"
+                "return 0;\n"
+                "}\n"
+            ),
+        }
+        gen = ProbeCodeGenerator(llm_client=_FakeLLM(payload))
+        result = gen.generate_probe(metric="actual_boost_clock_mhz", out_dir=Path("tests/.tmp"))
+        self.assertFalse(result.ok)
+        self.assertIn("contains_nonminimal", result.error)
+
+    def test_generate_probe_normalizes_clock64_spelling(self) -> None:
+        out_dir = Path("tests/.tmp") / f"codegen_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            payload = {
+                "metric": "actual_boost_clock_mhz",
+                "filename": "probe.cu",
+                "rationale": "clock spelling",
+                "code": (
+                    "#include <cstdio>\n"
+                    "#include <cuda_runtime.h>\n"
+                    "__global__ void k(unsigned long long* out){ out[0] = __clock64(); }\n"
+                    "int main(){\n"
+                    "printf(\"metric=actual_boost_clock_mhz value=1 samples=1 median=1 best=1 std=0\\n\");\n"
+                    "return 0;\n"
+                    "}\n"
+                ),
+            }
+            gen = ProbeCodeGenerator(llm_client=_FakeLLM(payload))
+            result = gen.generate_probe(metric="actual_boost_clock_mhz", out_dir=out_dir)
+            self.assertTrue(result.ok)
+            text = result.source_path.read_text(encoding="utf-8")
+            self.assertIn("clock64()", text)
+            self.assertNotIn("__clock64", text)
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

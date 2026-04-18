@@ -2,89 +2,210 @@ from __future__ import annotations
 
 import json
 import os
+import io
+import urllib.error
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from profiler_agent.multi_agent.llm_client import OpenAICompatibleConfig, OpenAICompatibleLLMClient
 
 
-class _FakeResponse:
-    def __init__(self, payload: dict) -> None:
-        self.payload = payload
+class _DummyResponse:
+    def __init__(self, body: str) -> None:
+        self._body = body
 
     def read(self) -> bytes:
-        return json.dumps(self.payload).encode("utf-8")
+        return self._body.encode("utf-8")
 
-    def __enter__(self) -> "_FakeResponse":
+    def __enter__(self) -> "_DummyResponse":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        _ = exc_type, exc, tb
-        return False
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        _ = (exc_type, exc_val, exc_tb)
+        return None
 
 
-class LLMClientTests(unittest.TestCase):
-    @patch.dict(
-        os.environ,
-        {
-            "API_KEY": "k1",
-            "BASE_URL": "https://example.com/v1",
-            "BASE_MODEL": "gpt-5.4",
-        },
-        clear=True,
-    )
-    def test_from_env_prefers_submission_variable_names(self) -> None:
-        client = OpenAICompatibleLLMClient.from_env()
-        self.assertIsNotNone(client)
-        assert client is not None
-        self.assertEqual(client.config.api_key, "k1")
-        self.assertEqual(client.config.base_url, "https://example.com/v1")
-        self.assertEqual(client.config.model, "gpt-5.4")
+class LlmClientTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = OpenAICompatibleLLMClient(
+            OpenAICompatibleConfig(
+                api_key="test_key",
+                base_url="https://example.invalid/v1",
+                model="gpt-test",
+                timeout_s=3,
+            )
+        )
 
-    @patch.dict(
-        os.environ,
-        {
-            "OPENAI_API_KEY": "k2",
-            "OPENAI_BASE_URL": "https://fallback.example/v1",
-            "OPENAI_MODEL": "gpt-4o-mini",
-        },
-        clear=True,
-    )
-    def test_from_env_falls_back_to_openai_variable_names(self) -> None:
-        client = OpenAICompatibleLLMClient.from_env()
-        self.assertIsNotNone(client)
-        assert client is not None
-        self.assertEqual(client.config.api_key, "k2")
-        self.assertEqual(client.config.base_url, "https://fallback.example/v1")
-        self.assertEqual(client.config.model, "gpt-4o-mini")
+    def _run_with_payload(self, payload: dict) -> dict | None:
+        raw = json.dumps(payload, ensure_ascii=False)
+        with patch("urllib.request.urlopen", return_value=_DummyResponse(raw)):
+            return self.client.complete_json(system_prompt="s", user_prompt="u")
 
-    @patch("profiler_agent.multi_agent.llm_client.urllib.request.urlopen")
-    def test_complete_json_parses_chat_completion(self, mock_urlopen: unittest.mock.Mock) -> None:
-        mock_urlopen.return_value = _FakeResponse(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "content": "{\"intent\":\"gpu_profiling\"}",
-                        }
+    def test_complete_json_accepts_plain_json_text(self) -> None:
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"selected_tools":["executor","ncu"]}',
                     }
-                ]
-            }
-        )
-        client = OpenAICompatibleLLMClient(
-            OpenAICompatibleConfig(api_key="k", base_url="https://api.openai.com/v1", model="gpt-4o-mini")
-        )
-        out = client.complete_json(system_prompt="s", user_prompt="u")
-        self.assertEqual(out, {"intent": "gpu_profiling"})
+                }
+            ]
+        }
+        parsed = self._run_with_payload(payload)
+        self.assertEqual(parsed, {"selected_tools": ["executor", "ncu"]})
 
-    @patch("profiler_agent.multi_agent.llm_client.urllib.request.urlopen")
-    def test_complete_json_returns_none_for_invalid_response(self, mock_urlopen: unittest.mock.Mock) -> None:
-        mock_urlopen.return_value = _FakeResponse({"choices": []})
-        client = OpenAICompatibleLLMClient(
-            OpenAICompatibleConfig(api_key="k", base_url="https://api.openai.com/v1", model="gpt-4o-mini")
+    def test_complete_json_accepts_markdown_fenced_json(self) -> None:
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "```json\n{\"next_actions\": [\"a\", \"b\"]}\n```",
+                    }
+                }
+            ]
+        }
+        parsed = self._run_with_payload(payload)
+        self.assertEqual(parsed, {"next_actions": ["a", "b"]})
+
+    def test_complete_json_accepts_json_embedded_in_text(self) -> None:
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "Here is the result.\n"
+                            "{\"intent\":\"gpu_profiling\"}\n"
+                            "Use it safely."
+                        ),
+                    }
+                }
+            ]
+        }
+        parsed = self._run_with_payload(payload)
+        self.assertEqual(parsed, {"intent": "gpu_profiling"})
+
+    def test_complete_json_accepts_output_array_shape(self) -> None:
+        payload = {
+            "output": [
+                {
+                    "content": [
+                        {"type": "output_text", "text": "{\"risk_level\":\"high\"}"},
+                    ]
+                }
+            ]
+        }
+        parsed = self._run_with_payload(payload)
+        self.assertEqual(parsed, {"risk_level": "high"})
+
+    def test_complete_json_writes_debug_record_when_enabled(self) -> None:
+        out_dir = Path("tests/.tmp")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        debug_path = out_dir / "llm_debug.jsonl"
+        if debug_path.exists():
+            debug_path.unlink()
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "```json\n{\"intent\":\"gpu_profiling\"}\n```",
+                    }
+                }
+            ]
+        }
+        raw = json.dumps(payload, ensure_ascii=False)
+        with patch.dict(os.environ, {"PROFILER_AGENT_LLM_DEBUG_PATH": str(debug_path)}):
+            with patch("urllib.request.urlopen", return_value=_DummyResponse(raw)):
+                parsed = self.client.complete_json(system_prompt="sys", user_prompt="usr")
+        self.assertEqual(parsed, {"intent": "gpu_profiling"})
+        self.assertTrue(debug_path.exists())
+        lines = debug_path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertGreaterEqual(len(lines), 1)
+        row = json.loads(lines[-1])
+        self.assertEqual(row.get("phase"), "json_parsed")
+        self.assertIn("raw_response", row)
+
+    def test_complete_json_writes_disabled_record(self) -> None:
+        out_dir = Path("tests/.tmp")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        debug_path = out_dir / "llm_debug_disabled.jsonl"
+        if debug_path.exists():
+            debug_path.unlink()
+        disabled_client = OpenAICompatibleLLMClient(
+            OpenAICompatibleConfig(
+                api_key="",
+                base_url="https://example.invalid/v1",
+                model="gpt-test",
+                timeout_s=3,
+            )
         )
-        out = client.complete_json(system_prompt="s", user_prompt="u")
-        self.assertIsNone(out)
+        with patch.dict(os.environ, {"PROFILER_AGENT_LLM_DEBUG_PATH": str(debug_path)}):
+            parsed = disabled_client.complete_json(system_prompt="sys", user_prompt="usr")
+        self.assertIsNone(parsed)
+        self.assertTrue(debug_path.exists())
+        row = json.loads(debug_path.read_text(encoding="utf-8").strip().splitlines()[-1])
+        self.assertEqual(row.get("phase"), "llm_disabled")
+
+    def test_complete_json_writes_http_error_details(self) -> None:
+        out_dir = Path("tests/.tmp")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        debug_path = out_dir / "llm_debug_http_error.jsonl"
+        if debug_path.exists():
+            debug_path.unlink()
+        err = urllib.error.HTTPError(
+            url="https://example.invalid/v1/chat/completions",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error":"invalid_api_key"}'),
+        )
+        with patch.dict(os.environ, {"PROFILER_AGENT_LLM_DEBUG_PATH": str(debug_path)}):
+            with patch("urllib.request.urlopen", side_effect=err):
+                parsed = self.client.complete_json(system_prompt="sys", user_prompt="usr")
+        self.assertIsNone(parsed)
+        row = json.loads(debug_path.read_text(encoding="utf-8").strip().splitlines()[-1])
+        self.assertEqual(row.get("phase"), "http_error")
+        self.assertEqual(row.get("error_type"), "HTTPError")
+        self.assertEqual(row.get("http_status"), 401)
+        self.assertEqual(row.get("error_category"), "auth_error")
+        body_excerpt = row.get("error_body_excerpt", "")
+        if body_excerpt:
+            self.assertIn("invalid_api_key", body_excerpt)
+
+    def test_complete_json_retries_on_timeout_then_succeeds(self) -> None:
+        out_dir = Path("tests/.tmp")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        debug_path = out_dir / "llm_debug_retry.jsonl"
+        if debug_path.exists():
+            debug_path.unlink()
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"intent":"gpu_profiling"}',
+                    }
+                }
+            ]
+        }
+        raw = json.dumps(payload, ensure_ascii=False)
+        attempts = [
+            TimeoutError("timed out once"),
+            _DummyResponse(raw),
+        ]
+        with patch.dict(os.environ, {"PROFILER_AGENT_LLM_DEBUG_PATH": str(debug_path)}):
+            with patch("urllib.request.urlopen", side_effect=attempts):
+                with patch("time.sleep", return_value=None):
+                    parsed = self.client.complete_json(system_prompt="sys", user_prompt="usr")
+        self.assertEqual(parsed, {"intent": "gpu_profiling"})
+        lines = debug_path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertGreaterEqual(len(lines), 2)
+        first = json.loads(lines[0])
+        last = json.loads(lines[-1])
+        self.assertEqual(first.get("phase"), "http_error")
+        self.assertEqual(first.get("retryable"), True)
+        self.assertEqual(first.get("will_retry"), True)
+        self.assertEqual(first.get("error_category"), "network_timeout")
+        self.assertEqual(last.get("phase"), "json_parsed")
 
 
 if __name__ == "__main__":

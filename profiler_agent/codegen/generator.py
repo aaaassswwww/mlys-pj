@@ -14,6 +14,24 @@ from profiler_agent.multi_agent.llm_client import LLMClient, OpenAICompatibleLLM
 
 
 _METRIC_SAFE_RE = re.compile(r"[^a-zA-Z0-9_]+")
+_STL_HEADERS = (
+    "<iostream>",
+    "<vector>",
+    "<algorithm>",
+    "<string>",
+    "<map>",
+    "<unordered_map>",
+    "<set>",
+)
+_STL_PATTERNS = (
+    "std::cout",
+    "std::cerr",
+    "std::vector",
+    "std::string",
+    "std::sort",
+    "std::max_element",
+    "std::min_element",
+)
 
 
 @dataclass(frozen=True)
@@ -31,6 +49,22 @@ def _sanitize_metric(metric: str) -> str:
     return cleaned.strip("_") or "unknown_metric"
 
 
+def _strip_fenced_code(code: str) -> str:
+    text = code.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z0-9_+-]*\s*", "", text, count=1)
+        if text.endswith("```"):
+            text = text[: -3]
+    return text.strip()
+
+
+def _normalize_generated_code(code: str) -> str:
+    normalized = _strip_fenced_code(code).replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("__clock64()", "clock64()")
+    normalized = normalized.replace("__clock64(", "clock64(")
+    return normalized.strip() + "\n"
+
+
 def _ensure_output_protocol(code: str) -> bool:
     lowered = code.lower()
     return "metric=" in lowered and "value=" in lowered and ("samples=" in lowered or "sample" in lowered)
@@ -41,12 +75,25 @@ def _basic_cuda_shape_ok(code: str) -> bool:
 
 
 def _validate_generated_code(code: str) -> tuple[bool, str]:
-    if not _basic_cuda_shape_ok(code):
+    normalized = _normalize_generated_code(code)
+    lower = normalized.lower()
+    if "cuda_runtime.h" not in lower:
+        return False, "missing_cuda_runtime_include"
+    if not _basic_cuda_shape_ok(normalized):
         return False, "missing_kernel_or_main"
-    if not _ensure_output_protocol(code):
+    if not _ensure_output_protocol(normalized):
         return False, "missing_structured_output_protocol"
+    if "__clock64" in normalized:
+        return False, "contains_unsupported___clock64"
+    for header in _STL_HEADERS:
+        if f"#include {header}" in normalized:
+            return False, f"contains_nonminimal_header:{header}"
+    for pattern in _STL_PATTERNS:
+        if pattern in normalized:
+            return False, f"contains_nonminimal_cpp_construct:{pattern}"
+    if "printf(" not in normalized:
+        return False, "missing_printf_output"
     banned = ("wget ", "curl ", "http://", "https://", "git clone")
-    lower = code.lower()
     for item in banned:
         if item in lower:
             return False, f"contains_banned_pattern:{item.strip()}"
@@ -111,6 +158,7 @@ class ProbeCodeGenerator:
                 rationale="",
                 error="missing_code",
             )
+        code = _normalize_generated_code(code)
         ok, validation_error = _validate_generated_code(code)
         if not ok:
             return ProbeGenerationResult(
