@@ -98,7 +98,9 @@ evidence = load_or_default(artifacts / "evidence.json", evidence_default)
 analysis = load_or_default(artifacts / "analysis.json", analysis_default)
 
 run_rc = int(os.environ.get("RUN_RC", "0") or "0")
-if run_rc == 124:
+time_budget = evidence.get("time_budget")
+timed_out = isinstance(time_budget, dict) and bool(time_budget.get("timed_out"))
+if run_rc == 124 and timed_out:
     timeout_note = "outer_shell_timeout_triggered_partial_artifacts_were_packaged"
     evidence.setdefault("time_budget", {})
     evidence["time_budget"]["shell_timeout_triggered"] = True

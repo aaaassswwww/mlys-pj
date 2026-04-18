@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from profiler_agent.tool_adapters.microbench_adapter import (
+    _generated_probe_binary_path,
     compile_probe_source,
     measure_metric_with_evidence,
     profile_probe_with_ncu,
@@ -14,6 +15,11 @@ from profiler_agent.tool_adapters.microbench_adapter import (
 
 
 class MicrobenchAdapterTests(unittest.TestCase):
+    def test_generated_probe_binary_path_uses_bin_subdirectory(self) -> None:
+        binary = _generated_probe_binary_path("dram__bytes_read.sum.per_second")
+        self.assertIn(str(Path("generated_probes") / "bin"), str(binary))
+        self.assertNotEqual(binary.parent.name, "dram__bytes_read_sum_per_second")
+
     def test_unsupported_metric(self) -> None:
         result = measure_metric_with_evidence("unknown_metric", "dummy")
         self.assertIsNone(result.value)

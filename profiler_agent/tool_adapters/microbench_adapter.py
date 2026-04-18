@@ -113,7 +113,7 @@ def _probe_binary_path(probe_name: str) -> Path:
 def _generated_probe_binary_path(metric_name: str) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
     safe = re.sub(r"[^a-zA-Z0-9_]+", "_", metric_name.strip()).strip("_") or "unknown_metric"
-    return _repo_root() / "outputs" / "generated_probes" / f"{safe}{suffix}"
+    return _repo_root() / "outputs" / "generated_probes" / "bin" / f"{safe}{suffix}"
 
 
 def _extract_last_numeric(text: str) -> Optional[float]:
