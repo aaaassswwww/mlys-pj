@@ -8,9 +8,10 @@ from profiler_agent.agent_state import AgentStateRecord, load_agent_state, save_
 from profiler_agent.multi_agent.executor import ExecutorAgent
 from profiler_agent.multi_agent.interpreter import InterpreterAgent
 from profiler_agent.multi_agent.llm_client import LLMClient, OpenAICompatibleLLMClient
-from profiler_agent.multi_agent.models import AgentMessage, MultiAgentRequest, MultiAgentResult, MultiAgentState
+from profiler_agent.multi_agent.models import AgentMessage, ExecutionPlan, MultiAgentRequest, MultiAgentResult, MultiAgentState
 from profiler_agent.multi_agent.planner import PlannerAgent
 from profiler_agent.multi_agent.router import RouterAgent
+from profiler_agent.runtime_budget import build_timeout_metadata, runtime_budget_expired
 from profiler_agent.target_semantics import classify_target
 
 
@@ -356,6 +357,24 @@ class MultiAgentCoordinator:
         last_plan: ExecutionPlan | None = None
         max_iterations = self._max_iterations(request)
         for execution_round in range(1, max_iterations + 1):
+            if runtime_budget_expired():
+                state.outputs["time_budget"] = build_timeout_metadata(
+                    reason="time_budget_exhausted_before_next_iteration",
+                    skipped_targets=list(state.request.targets),
+                )
+                state.trace.append(
+                    AgentMessage(
+                        sender="coordinator",
+                        recipient="all_agents",
+                        action="iteration_completed",
+                        content={
+                            "execution_round": execution_round,
+                            "should_continue": False,
+                            "decision_reason": "time_budget_exhausted",
+                        },
+                    )
+                )
+                break
             if execution_round > 1:
                 state.round_directive = self._build_round_directive(state)
             else:
@@ -385,5 +404,6 @@ class MultiAgentCoordinator:
             "max_iterations": max_iterations,
             "executed_rounds": len(state.outputs.get("iterations", [])),
         }
-        assert last_plan is not None
+        if last_plan is None:
+            last_plan = ExecutionPlan(intent=state.routed_intent, selected_tools=[], steps=[])
         return MultiAgentResult(out_dir=out_dir, outputs=dict(state.outputs), trace=list(state.trace), plan=last_plan)

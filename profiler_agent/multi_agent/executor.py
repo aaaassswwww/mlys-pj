@@ -9,6 +9,7 @@ from typing import Any
 
 from profiler_agent.multi_agent.models import AgentMessage, ExecutionStageResult, ExecutionStep, MultiAgentState
 from profiler_agent.orchestrator.pipeline import execute
+from profiler_agent.runtime_budget import build_timeout_metadata, runtime_budget_expired
 from profiler_agent.runtime_tools import parse_command_argv, probe_command, probe_python_module
 from profiler_agent.schema.target_spec_schema import TargetSpec
 from profiler_agent.target_semantics import classify_target
@@ -306,6 +307,18 @@ class ExecutorAgent:
 
         outputs: dict[str, Any] = {}
         for tool in tools:
+            if runtime_budget_expired():
+                outputs[str(tool)] = {
+                    "ok": False,
+                    "skipped": True,
+                    "reason": "time_budget_exhausted",
+                    "timeout": build_timeout_metadata(
+                        reason="time_budget_exhausted_before_tool_execution",
+                        skipped_targets=targets,
+                    ),
+                    "selected_target": None,
+                }
+                continue
             selected_target = str(tool_targets.get(tool) or primary_target)
             if tool == "executor":
                 outputs[tool] = self._run_tool_executor(run_cmd=run_cmd)
@@ -335,6 +348,21 @@ class ExecutorAgent:
         )
 
     def execute_step(self, step: ExecutionStep, state: MultiAgentState, out_dir: Path) -> AgentMessage:
+        if runtime_budget_expired() and step.action != "run_pipeline":
+            return AgentMessage(
+                sender=self.name,
+                recipient="coordinator",
+                action="noop",
+                content={
+                    "step_id": step.id,
+                    "action": step.action,
+                    "reason": "time_budget_exhausted",
+                    "timeout": build_timeout_metadata(
+                        reason="time_budget_exhausted_before_executor_step",
+                        skipped_targets=list(state.request.targets),
+                    ),
+                },
+            )
         if step.action == "run_tools":
             return self.run_tools(state=state, step=step)
         if step.action != "run_pipeline":

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -150,6 +152,47 @@ class PipelineSmokeTests(unittest.TestCase):
                 "intrinsic_proxy",
             )
         finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    @patch.dict(
+        os.environ,
+        {
+            "PROFILER_AGENT_ENABLE_TIME_BUDGET": "1",
+            "PROFILER_AGENT_MAX_RUNTIME_SECONDS": "1",
+        },
+        clear=False,
+    )
+    def test_execute_with_expired_time_budget_writes_partial_timeout_outputs(self) -> None:
+        os.environ["PROFILER_AGENT_BUDGET_START_EPOCH"] = str(time.time() - 5.0)
+        spec = TargetSpec(
+            targets=["dram_latency_cycles", "launch__sm_count"],
+            run="",
+        )
+        out_dir = Path("tests/.tmp") / f"smoke_timeout_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            output = execute(spec, out_dir)
+            results = json.loads(output.results_path.read_text(encoding="utf-8"))
+            evidence = json.loads(output.evidence_path.read_text(encoding="utf-8"))
+            analysis = json.loads(output.analysis_path.read_text(encoding="utf-8"))
+            self.assertEqual(results["dram_latency_cycles"], 0.0)
+            self.assertEqual(results["launch__sm_count"], 0)
+            self.assertTrue(evidence["time_budget"]["timed_out"])
+            self.assertEqual(
+                evidence["targets"]["dram_latency_cycles"]["measurement_mode"],
+                "timeout_partial_result",
+            )
+            self.assertEqual(
+                evidence["targets"]["launch__sm_count"]["workload_requirement"]["status"],
+                "not_attempted_due_to_time_budget",
+            )
+            self.assertTrue(analysis["time_budget"]["timed_out"])
+            self.assertIn(
+                "time_budget_exhausted_before_all_requested_tasks_finished_remaining_targets_were_left_as_partial_timeout_results",
+                analysis["analysis_notes"],
+            )
+        finally:
+            os.environ.pop("PROFILER_AGENT_BUDGET_START_EPOCH", None)
             shutil.rmtree(out_dir, ignore_errors=True)
 
     @patch("profiler_agent.target_strategies.generic.run_probe_iteration")

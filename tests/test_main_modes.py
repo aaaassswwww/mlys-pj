@@ -17,12 +17,14 @@ from profiler_agent.tool_adapters.binary_runner import RunResult
 
 class MainModeTests(unittest.TestCase):
     @patch("profiler_agent.main.execute")
+    @patch("profiler_agent.main.initialize_runtime_budget")
     @patch("profiler_agent.main.load_target_spec")
     @patch("profiler_agent.main.parse_args")
     def test_single_mode_keeps_existing_pipeline_path(
         self,
         mock_parse_args: unittest.mock.Mock,
         mock_load_spec: unittest.mock.Mock,
+        mock_initialize_budget: unittest.mock.Mock,
         mock_execute: unittest.mock.Mock,
     ) -> None:
         out_dir = Path("tests/.tmp") / f"main_single_{uuid4().hex}"
@@ -42,6 +44,7 @@ class MainModeTests(unittest.TestCase):
 
         rc = main()
         self.assertEqual(rc, 0)
+        mock_initialize_budget.assert_called_once()
         mock_execute.assert_called_once()
 
     @patch("profiler_agent.main.execute")

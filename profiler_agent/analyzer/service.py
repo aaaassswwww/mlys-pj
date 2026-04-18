@@ -78,6 +78,16 @@ def build_analysis(results: dict[str, float], evidence: dict[str, Any]) -> dict[
             "synthetic_counter_probe_report_summarizes_proxy_counter_measurements_and_marks_them_as_non_workload_observations"
         )
         baseline["analysis_notes"] = notes
+    time_budget = evidence.get("time_budget")
+    if isinstance(time_budget, dict) and time_budget.get("timed_out"):
+        baseline["time_budget"] = time_budget
+        notes = baseline.get("analysis_notes")
+        if not isinstance(notes, list):
+            notes = []
+        notes.append(
+            "time_budget_exhausted_before_all_requested_tasks_finished_remaining_targets_were_left_as_partial_timeout_results"
+        )
+        baseline["analysis_notes"] = notes
     llm_analysis = build_llm_analysis(results=results, evidence=evidence, baseline_analysis=baseline)
 
     if llm_analysis is None:

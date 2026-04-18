@@ -8,6 +8,7 @@ from pathlib import Path
 from profiler_agent.io.load_target_spec import load_target_spec
 from profiler_agent.multi_agent import MultiAgentCoordinator, MultiAgentRequest
 from profiler_agent.orchestrator.pipeline import execute
+from profiler_agent.runtime_budget import initialize_runtime_budget
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,6 +44,7 @@ def _write_multi_agent_artifacts(out_dir: Path, plan: object, trace: object) -> 
 
 def main() -> int:
     args = parse_args()
+    initialize_runtime_budget()
     spec = load_target_spec(args.spec)
 
     if args.mode == "single":
