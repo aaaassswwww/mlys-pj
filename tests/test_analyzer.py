@@ -138,6 +138,57 @@ class AnalyzerTests(unittest.TestCase):
             analysis["analysis_notes"],
         )
 
+    def test_analysis_uses_accepted_synthetic_counter_probe_as_proxy_signal(self) -> None:
+        results = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 76.05,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 62.91,
+            "dram__bytes_read.sum.per_second": 233393513034.7,
+            "dram__bytes_write.sum.per_second": 845692047377.33,
+        }
+        evidence = {
+            "targets": {
+                "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+                    "measurement_mode": "synthetic_counter_probe",
+                    "semantic_validity": "synthetic_counter_proxy",
+                    "probe_iteration": {
+                        "final_decision": "accept_measurement",
+                        "analysis": {
+                            "next_action": "accept_measurement",
+                            "reason": "measurement_accepted",
+                            "confidence": 0.85,
+                        },
+                        "state": {"profile_history": [{"source": "ncu_csv"}]},
+                    },
+                    "probe": {"profile_source": "ncu_csv"},
+                },
+                "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": {
+                    "measurement_mode": "synthetic_counter_probe",
+                    "semantic_validity": "synthetic_counter_proxy",
+                    "probe_iteration": {
+                        "final_decision": "accept_measurement",
+                        "analysis": {
+                            "next_action": "accept_measurement",
+                            "reason": "measurement_accepted",
+                            "confidence": 0.85,
+                        },
+                        "state": {"profile_history": [{"source": "ncu_csv"}]},
+                    },
+                    "probe": {"profile_source": "ncu_csv"},
+                },
+            }
+        }
+        analysis = build_analysis(results, evidence)
+        self.assertEqual(analysis["bound_type"], "balanced_or_mixed")
+        self.assertGreater(analysis["compute_score"], 0.0)
+        self.assertGreater(analysis["memory_score"], 0.0)
+        self.assertIn("sm__throughput.avg.pct_of_peak_sustained_elapsed", analysis["observed_metrics"])
+        self.assertIn("gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed", analysis["observed_metrics"])
+        self.assertEqual(analysis["proxy_signal_count"], 2)
+        self.assertIn(
+            "accepted_synthetic_counter_probe_targets_were_used_as_proxy_signals_for_bound_inference_not_as_direct_workload_observations",
+            analysis["analysis_notes"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

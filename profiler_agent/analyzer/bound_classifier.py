@@ -29,7 +29,13 @@ class AnalysisResult:
 
 
 _COMPUTE_ALIASES: dict[str, tuple[str, ...]] = {
-    "sm_efficiency": ("sm_efficiency", "sm_utilization", "compute_utilization", "sm_busy_pct"),
+    "sm_efficiency": (
+        "sm_efficiency",
+        "sm_utilization",
+        "compute_utilization",
+        "sm_busy_pct",
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+    ),
     "achieved_occupancy": ("achieved_occupancy", "occupancy"),
     "flop_efficiency": ("flop_sp_efficiency", "flop_dp_efficiency", "tensor_core_utilization"),
 }
@@ -41,8 +47,15 @@ _MEMORY_ALIASES: dict[str, tuple[str, ...]] = {
         "memory_bw_utilization",
         "dram__throughput.avg.pct_of_peak_sustained_elapsed",
         "dram__throughput.pct_of_peak_sustained_elapsed",
+        "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
     ),
-    "dram_throughput_gbps": ("dram_throughput_gbps", "dram_read_throughput", "dram_write_throughput"),
+    "dram_throughput_gbps": (
+        "dram_throughput_gbps",
+        "dram_read_throughput",
+        "dram_write_throughput",
+        "dram__bytes_read.sum.per_second",
+        "dram__bytes_write.sum.per_second",
+    ),
     "dram_latency_cycles": ("dram_latency_cycles",),
 }
 

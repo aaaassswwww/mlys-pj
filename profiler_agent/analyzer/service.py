@@ -71,12 +71,24 @@ def build_analysis(results: dict[str, float], evidence: dict[str, Any]) -> dict[
     synthetic_counter_probe_report = build_synthetic_counter_probe_report(evidence)
     if synthetic_counter_probe_report.get("count", 0):
         baseline["synthetic_counter_probe_report"] = synthetic_counter_probe_report
+        accepted_proxy_targets = [
+            str(item.get("target"))
+            for item in synthetic_counter_probe_report.get("targets", [])
+            if isinstance(item, dict) and item.get("accepted")
+        ]
+        if accepted_proxy_targets:
+            baseline["proxy_signal_targets"] = accepted_proxy_targets
+            baseline["proxy_signal_count"] = len(accepted_proxy_targets)
         notes = baseline.get("analysis_notes")
         if not isinstance(notes, list):
             notes = []
         notes.append(
             "synthetic_counter_probe_report_summarizes_proxy_counter_measurements_and_marks_them_as_non_workload_observations"
         )
+        if accepted_proxy_targets:
+            notes.append(
+                "accepted_synthetic_counter_probe_targets_were_used_as_proxy_signals_for_bound_inference_not_as_direct_workload_observations"
+            )
         baseline["analysis_notes"] = notes
     time_budget = evidence.get("time_budget")
     if isinstance(time_budget, dict) and time_budget.get("timed_out"):
