@@ -240,6 +240,12 @@ class MultiAgentCoordinator:
         if not isinstance(next_actions, list):
             next_actions = []
         normalized_actions = MultiAgentCoordinator._normalized_actions(next_actions)
+        pipeline = state.outputs.get("pipeline", {})
+        evidence_obj = MultiAgentCoordinator._load_json_if_exists(pipeline.get("evidence_path")) if isinstance(pipeline, dict) else {}
+        synthetic_counter_probe_report = evidence_obj.get("synthetic_counter_probe_report", {})
+        accepted_synthetic_counter_probes = 0
+        if isinstance(synthetic_counter_probe_report, dict):
+            accepted_synthetic_counter_probes = int(synthetic_counter_probe_report.get("accepted_count", 0) or 0)
         if (
             not (state.request.run or "").strip()
             and (
@@ -255,6 +261,8 @@ class MultiAgentCoordinator:
                 )
             )
         ):
+            if accepted_synthetic_counter_probes > 0:
+                return False, "no_run_input_finalized_with_synthetic_counter_probes"
             return False, "no_run_input_finalized_with_placeholders"
         probe_rerun_requested = MultiAgentCoordinator._matches_any(
             normalized_actions,
@@ -287,7 +295,11 @@ class MultiAgentCoordinator:
         if rerun_requested and (state.request.run or "").strip():
             return True, "refinement_requested_rerun"
         if rerun_requested and not (state.request.run or "").strip():
+            if accepted_synthetic_counter_probes > 0:
+                return False, "no_run_input_finalized_with_synthetic_counter_probes"
             return False, "no_run_input_finalized_with_placeholders"
+        if not (state.request.run or "").strip() and accepted_synthetic_counter_probes > 0:
+            return False, "no_run_input_finalized_with_synthetic_counter_probes"
         return False, "no_followup_condition_met"
 
     def _run_single_round(

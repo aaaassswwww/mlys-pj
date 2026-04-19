@@ -77,6 +77,14 @@ def _pick_first(metrics: dict[str, float], aliases: tuple[str, ...]) -> Optional
     return None
 
 
+def _collect_matches(metrics: dict[str, float], aliases: tuple[str, ...]) -> dict[str, float]:
+    observed: dict[str, float] = {}
+    for name in aliases:
+        if name in metrics:
+            observed[name] = float(metrics[name])
+    return observed
+
+
 def _memory_latency_penalty(metrics: dict[str, float]) -> float:
     entry = _pick_first(metrics, _MEMORY_ALIASES["dram_latency_cycles"])
     if not entry:
@@ -100,7 +108,7 @@ def _compute_score(metrics: dict[str, float]) -> tuple[float, dict[str, float]]:
         if not match:
             continue
         source_name, raw_value = match
-        observed[source_name] = raw_value
+        observed.update(_collect_matches(metrics, aliases))
         parts.append(_normalize_percent_like(raw_value))
     if not parts:
         return 0.0, observed
@@ -113,13 +121,13 @@ def _memory_score(metrics: dict[str, float]) -> tuple[float, dict[str, float]]:
     util_match = _pick_first(metrics, _MEMORY_ALIASES["dram_utilization"])
     if util_match:
         name, value = util_match
-        observed[name] = value
+        observed.update(_collect_matches(metrics, _MEMORY_ALIASES["dram_utilization"]))
         parts.append(_normalize_percent_like(value))
 
     bw_match = _pick_first(metrics, _MEMORY_ALIASES["dram_throughput_gbps"])
     if bw_match:
         name, value = bw_match
-        observed[name] = value
+        observed.update(_collect_matches(metrics, _MEMORY_ALIASES["dram_throughput_gbps"]))
         # Throughput in GB/s is hard to normalize without hardware peak.
         # Keep this as a weak signal if utilization metric is absent.
         if not util_match:

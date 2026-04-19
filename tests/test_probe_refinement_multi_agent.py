@@ -141,6 +141,37 @@ class ProbeRefinementMultiAgentTests(unittest.TestCase):
         self.assertTrue(should_continue)
         self.assertEqual(reason, "synthetic_probe_refinement_requested_rerun")
 
+    def test_coordinator_finalizes_no_run_with_accepted_synthetic_counter_probes(self) -> None:
+        out_dir = Path("tests/.tmp") / f"counter_probe_done_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            evidence_path = out_dir / "evidence.json"
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "synthetic_counter_probe_report": {
+                            "accepted_count": 4,
+                            "count": 4,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = MultiAgentState(
+                request=MultiAgentRequest(targets=["dram__bytes_read.sum.per_second"], run="", out_dir=out_dir),
+                outputs={
+                    "next_actions": ["Profile kernel occupancy and warp efficiency metrics"],
+                    "next_targets": ["dram__bytes_read.sum.per_second"],
+                    "tool_calls": {},
+                    "pipeline": {"evidence_path": str(evidence_path)},
+                },
+            )
+            should_continue, reason = MultiAgentCoordinator._should_iterate(state, execution_round=1, max_iterations=2)
+            self.assertFalse(should_continue)
+            self.assertEqual(reason, "no_run_input_finalized_with_synthetic_counter_probes")
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

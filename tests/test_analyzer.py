@@ -183,6 +183,8 @@ class AnalyzerTests(unittest.TestCase):
         self.assertGreater(analysis["memory_score"], 0.0)
         self.assertIn("sm__throughput.avg.pct_of_peak_sustained_elapsed", analysis["observed_metrics"])
         self.assertIn("gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed", analysis["observed_metrics"])
+        self.assertIn("dram__bytes_read.sum.per_second", analysis["observed_metrics"])
+        self.assertIn("dram__bytes_write.sum.per_second", analysis["observed_metrics"])
         self.assertEqual(analysis["proxy_signal_count"], 2)
         self.assertIn(
             "accepted_synthetic_counter_probe_targets_were_used_as_proxy_signals_for_bound_inference_not_as_direct_workload_observations",
