@@ -49,11 +49,11 @@ def _check_main_modes(workspace: Path) -> CheckResult:
     if not main_path.exists():
         return CheckResult("main_modes", False, f"missing: {main_path}")
     text = _read_text(main_path)
-    tokens = ['choices=["single", "multi"]', "--mode", "--spec", "--out"]
+    tokens = ['choices=["single", "multi", "phase2"]', "--mode", "--spec", "--out", "--phase2-iterations"]
     missing = [token for token in tokens if token not in text]
     if missing:
         return CheckResult("main_modes", False, f"missing token(s): {missing}")
-    return CheckResult("main_modes", True, "single/multi mode entry is present")
+    return CheckResult("main_modes", True, "single/multi/phase2 mode entry is present")
 
 
 def _check_llm_env_contract(workspace: Path) -> CheckResult:

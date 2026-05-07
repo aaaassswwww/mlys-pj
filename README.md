@@ -1,8 +1,10 @@
-# GPU Profiling Agent (MVP Skeleton)
+# GPU Profiling Agent
 
-Minimal, extensible scaffold for a target-driven GPU profiling agent.
+Extensible agent framework originally built for Phase 1 hardware intrinsic profiling, now being prepared for Phase 2 LoRA CUDA optimization.
 
 ## Contract
+
+Current stable contract in this repository is still the Phase 1 evaluator contract:
 
 - Input: `target_spec.json`
   - Required fields:
@@ -12,6 +14,12 @@ Minimal, extensible scaffold for a target-driven GPU profiling agent.
   - `results.json`: numeric values only, keyed by target
   - `evidence.json`: optional debugging/provenance data
   - `analysis.json`: bottleneck analysis (`bound_type`, confidence, bottlenecks)
+
+Phase 2 is a different evaluator contract centered on:
+- `bash run.sh`
+- final root-level `optimized_lora.cu`
+
+See [PHASE2_REFACTOR_PLAN_LORA_OPTIMIZATION.md](</workspace/PHASE2_REFACTOR_PLAN_LORA_OPTIMIZATION.md>) for the migration plan.
 
 ## Quick Start
 
@@ -50,6 +58,8 @@ In strict mode, probe generation failures are surfaced as `llm_generation_failed
 
 ## Current MVP Status
 
+Phase 1 status:
+
 - Dynamic target planning from `target_spec.json` (`targets` is not hardcoded).
 - Executes the provided `run` command once and records run evidence.
 - Strategy registry supports target-specific implementations plus generic fallback.
@@ -75,6 +85,24 @@ In strict mode, probe generation failures are surfaced as `llm_generation_failed
   - `ExecutorAgent`: runs tool execution stage (`ncu`, `microbench`, `nvml`, `nsys`, `torch_profiler`) and pipeline stage
   - `InterpreterAgent`: summarizes outputs and proposes next iteration actions
   - `MultiAgentCoordinator`: orchestrates the end-to-end multi-agent loop
+
+Phase 2 status:
+
+- Some supporting infrastructure already exists for iterative agent workflows:
+  - runtime tool probing
+  - compile/run/profile separation
+  - probe iteration and repair patterns
+  - LLM code generation and revision loops
+- Dedicated Phase 2 foundation modules now exist under `profiler_agent/phase2/`:
+  - `harness.py`: LoRA reference math, correctness checks, benchmark helpers
+  - `generator.py`: LLM-first candidate generation for single-file `optimized_lora.cu`
+  - `optimizer.py`: iteration loop and best-candidate promotion
+  - `candidate_store.py`: root `optimized_lora.cu`, state, and report persistence
+- Phase 2 bootstrap behavior is now implemented:
+  - even before full CUDA evaluator integration, the optimizer can keep a root `optimized_lora.cu`
+  - `.agent_artifacts/phase2_state.json` and `.agent_artifacts/phase2_report.json` are written alongside it
+- The repository is not yet fully switched to the Phase 2 LoRA optimization contract.
+- The next architecture step is to add a dedicated LoRA optimization workflow rather than extending the Phase 1 metric pipeline further.
 
 ## Run Tests
 
@@ -115,3 +143,10 @@ python scripts/pre_submit_check.py --workspace /workspace --run-container-check
 1. Add a strategy under `profiler_agent/target_strategies/`.
 2. Register it in `profiler_agent/target_strategies/registry.py`.
 3. Add/upgrade adapters under `profiler_agent/tool_adapters/`.
+
+## Phase 2
+
+The recommended next workstream is documented in:
+
+- [PHASE2_REFACTOR_PLAN_LORA_OPTIMIZATION.md](</workspace/PHASE2_REFACTOR_PLAN_LORA_OPTIMIZATION.md>)
+- [PROJECT_HANDOFF.md](</workspace/PROJECT_HANDOFF.md>)

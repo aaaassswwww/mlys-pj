@@ -11,6 +11,8 @@ from uuid import uuid4
 from profiler_agent.main import main
 from profiler_agent.multi_agent.models import AgentMessage, ExecutionPlan, ExecutionStep, MultiAgentResult
 from profiler_agent.orchestrator.pipeline import PipelineOutput
+from profiler_agent.phase2.optimizer import Phase2OptimizationResult
+from profiler_agent.phase2.models import Phase2OptimizerState
 from profiler_agent.schema.target_spec_schema import TargetSpec
 from profiler_agent.tool_adapters.binary_runner import RunResult
 
@@ -129,6 +131,44 @@ class MainModeTests(unittest.TestCase):
             trace_json = json.loads(trace_path.read_text(encoding="utf-8"))
             self.assertEqual(plan_json["intent"], "gpu_profiling")
             self.assertEqual(trace_json[0]["sender"], "router_agent")
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    @patch("profiler_agent.main.run_default_phase2_workflow")
+    @patch("profiler_agent.main.load_target_spec")
+    @patch("profiler_agent.main.parse_args")
+    def test_phase2_mode_uses_phase2_workflow_without_loading_spec(
+        self,
+        mock_parse_args: unittest.mock.Mock,
+        mock_load_spec: unittest.mock.Mock,
+        mock_phase2_workflow: unittest.mock.Mock,
+    ) -> None:
+        out_dir = Path("tests/.tmp") / f"main_phase2_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            optimized_path = out_dir / "optimized_lora.cu"
+            mock_parse_args.return_value = argparse.Namespace(
+                spec=Path("inputs/target_spec.json"),
+                out=out_dir,
+                mode="phase2",
+                objective="",
+                phase2_iterations=3,
+            )
+            mock_phase2_workflow.return_value = Phase2OptimizationResult(
+                best_candidate_id="cand-1",
+                best_speedup=1.25,
+                iterations_run=3,
+                optimized_lora_path=optimized_path,
+                state=Phase2OptimizerState(iteration=3, current_best_candidate_id="cand-1", best_speedup=1.25),
+            )
+
+            rc = main()
+            self.assertEqual(rc, 0)
+            mock_phase2_workflow.assert_called_once_with(
+                root_dir=out_dir,
+                max_iterations=3,
+            )
+            mock_load_spec.assert_not_called()
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 

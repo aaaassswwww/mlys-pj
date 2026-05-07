@@ -8,6 +8,7 @@ from pathlib import Path
 from profiler_agent.io.load_target_spec import load_target_spec
 from profiler_agent.multi_agent import MultiAgentCoordinator, MultiAgentRequest
 from profiler_agent.orchestrator.pipeline import execute
+from profiler_agent.phase2.workflow import run_default_phase2_workflow
 from profiler_agent.runtime_budget import initialize_runtime_budget
 
 
@@ -18,15 +19,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["single", "multi"],
+        choices=["single", "multi", "phase2"],
         default="single",
-        help="execution mode: single pipeline or multi-agent coordinator",
+        help="execution mode: single pipeline, multi-agent coordinator, or phase2 LoRA optimizer",
     )
     parser.add_argument(
         "--objective",
         type=str,
         default="",
         help="optional high-level objective used by multi-agent routing/planning",
+    )
+    parser.add_argument(
+        "--phase2-iterations",
+        type=int,
+        default=2,
+        help="maximum optimization iterations for phase2 workflow",
     )
     return parser.parse_args()
 
@@ -45,6 +52,16 @@ def _write_multi_agent_artifacts(out_dir: Path, plan: object, trace: object) -> 
 def main() -> int:
     args = parse_args()
     initialize_runtime_budget()
+    if args.mode == "phase2":
+        result = run_default_phase2_workflow(
+            root_dir=args.out,
+            max_iterations=max(1, int(args.phase2_iterations)),
+        )
+        print(f"optimized_lora.cu: {result.optimized_lora_path or (args.out / 'optimized_lora.cu')}")
+        print(f"phase2_state.json: {args.out / '.agent_artifacts' / 'phase2_state.json'}")
+        print(f"phase2_report.json: {args.out / '.agent_artifacts' / 'phase2_report.json'}")
+        return 0
+
     spec = load_target_spec(args.spec)
 
     if args.mode == "single":

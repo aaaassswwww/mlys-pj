@@ -24,8 +24,14 @@ class ServerSelfCheckTests(unittest.TestCase):
         self.assertTrue(results[0]["ok"])
         self.assertTrue(results[1]["optional"])
 
+    @patch("scripts.server_self_check.resolve_command_path")
     @patch("scripts.server_self_check.subprocess.run")
-    def test_main_succeeds_when_mocked_checks_pass(self, mock_run: unittest.mock.Mock) -> None:
+    def test_main_succeeds_when_mocked_checks_pass(
+        self,
+        mock_run: unittest.mock.Mock,
+        mock_resolve: unittest.mock.Mock,
+    ) -> None:
+        mock_resolve.return_value = "/usr/bin/fake"
         mock_run.return_value.returncode = 0
         workspace = Path("tests/.tmp") / f"server_self_check_{uuid4().hex}"
         workspace.mkdir(parents=True, exist_ok=True)

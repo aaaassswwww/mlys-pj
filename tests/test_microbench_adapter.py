@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 from profiler_agent.tool_adapters.microbench_adapter import (
     _generated_probe_binary_path,
@@ -38,7 +40,7 @@ class MicrobenchAdapterTests(unittest.TestCase):
     ) -> None:
         from profiler_agent.tool_adapters.ncu_adapter import NcuQueryResult
 
-        tmp_dir = Path("tests/.tmp/microbench_counter")
+        tmp_dir = Path("tests/.tmp") / f"microbench_counter_{uuid4().hex}"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         source_path = tmp_dir / "probe.cu"
         source_path.write_text("// probe", encoding="utf-8")
@@ -74,8 +76,7 @@ class MicrobenchAdapterTests(unittest.TestCase):
             self.assertEqual(result.generation_source, "template_generated")
             self.assertEqual(result.parsed_from, "ncu_profiled_probe[counter_metric]")
         finally:
-            if source_path.exists():
-                source_path.unlink()
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     @patch("profiler_agent.tool_adapters.microbench_adapter._probe_source_path")
     @patch("profiler_agent.tool_adapters.microbench_adapter._compile_probe")
@@ -156,21 +157,28 @@ class MicrobenchAdapterTests(unittest.TestCase):
         mock_compile_probe: unittest.mock.Mock,
         mock_generated_binary_path: unittest.mock.Mock,
     ) -> None:
-        mock_select_probe_source.return_value = (
-            Path(os.path.abspath("outputs/generated_probes/actual_boost_clock_mhz/probe.cu")),
-            "llm_generated",
-            1,
-            "",
-            [],
-        )
-        mock_generated_binary_path.return_value = Path(os.path.abspath("outputs/generated_probes/actual_boost_clock_mhz/probe.exe"))
-        mock_compile_probe.return_value = (1, "", 'error: identifier "__clock64" is undefined')
+        tmp_dir = Path("tests/.tmp") / f"generated_probe_{uuid4().hex}"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        source_path = tmp_dir / "probe.cu"
+        source_path.write_text("// generated probe", encoding="utf-8")
+        try:
+            mock_select_probe_source.return_value = (
+                source_path,
+                "llm_generated",
+                1,
+                "",
+                [],
+            )
+            mock_generated_binary_path.return_value = tmp_dir / "probe.exe"
+            mock_compile_probe.return_value = (1, "", 'error: identifier "__clock64" is undefined')
 
-        result = measure_metric_with_evidence("actual_boost_clock_mhz", "dummy")
-        self.assertEqual(result.source, "compile_failed")
-        self.assertIn("__clock64", result.compile_stderr_tail)
-        self.assertEqual(result.compile_returncode, 1)
-        self.assertIsInstance(result.compile_command, list)
+            result = measure_metric_with_evidence("actual_boost_clock_mhz", "dummy")
+            self.assertEqual(result.source, "compile_failed")
+            self.assertIn("__clock64", result.compile_stderr_tail)
+            self.assertEqual(result.compile_returncode, 1)
+            self.assertIsInstance(result.compile_command, list)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     @patch("profiler_agent.tool_adapters.microbench_adapter._compile_probe")
     def test_compile_probe_source_returns_typed_stage_result(self, mock_compile_probe: unittest.mock.Mock) -> None:

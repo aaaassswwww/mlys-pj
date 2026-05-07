@@ -1,14 +1,14 @@
-# GPU Profiling Agent - Project Handoff Context (Updated 2026-04-13)
+# GPU Profiling Agent - Project Handoff Context (Updated 2026-05-07)
 
 ## 1) Purpose
-Build a target-driven GPU hardware intrinsic profiling agent for MLSYS project phase 1.7.
-System goals:
-- Accept dynamic evaluator targets.
-- Output numeric results in required format.
-- Provide structured evidence for LLM-as-a-Judge.
-- Stay robust under tool/environment variation.
+Repository status is now split across two project phases:
 
-## 2) Requirement Mapping (Section 1.7)
+- Phase 1: target-driven GPU hardware intrinsic profiling agent
+- Phase 2: agentic CUDA optimization system for a LoRA operator
+
+Current codebase is strongest on Phase 1, with active Phase 2 foundation work now present in-repo.
+
+## 2) Phase 1 Summary (Completed Mainline)
 
 ### 2.1 1.7.1 Hardware Intrinsic Profiling Objectives
 Current registered target scope:
@@ -42,7 +42,7 @@ Implemented direction:
 - Rich evidence artifacts (tool traces, fusion metadata, detector findings)
 - LLM-based analysis path (with rule guardrails/fallback)
 
-## 3) Latest Policy Compliance (Important)
+## 3) Phase 1 Latest Policy Compliance
 
 Recent clarified policy requires:
 1. No external downloaded benchmarks; agent must autonomously generate microbench code.
@@ -54,7 +54,7 @@ Current compliance status:
 - LLM-generated probe path is integrated.
 - Strict mode can disable static probe fallback completely.
 
-## 4) I/O Contract
+## 4) Current Stable Contract
 
 ### 4.1 Input
 `target_spec.json`
@@ -75,7 +75,9 @@ Multi-agent mode additionally writes:
 - `outputs/multi_agent_plan.json`
 - `outputs/multi_agent_trace.json`
 
-## 5) Architecture Snapshot
+This remains the stable, implemented evaluator contract in the repository today.
+
+## 5) Architecture Snapshot (Phase 1 Mainline)
 
 ### 5.1 Mainline Pipeline
 `main(single) -> load spec -> run target binary -> strategy measure -> normalize -> detectors -> analysis -> write outputs`
@@ -184,7 +186,8 @@ On environments without GPU tools (`nvcc`, `ncu`) or without `API_KEY`:
 
 ## 11) Testing Status (Latest)
 
-- Current suite: **35/35 passing**
+- Current suite: more extensive than the original Phase 1 handoff snapshot; repository contains Phase 2-oriented tests and supporting modules as well.
+- Last verified Phase 1-focused suite during active refactor: **35/35 passing**
 - Coverage includes:
   - schema/registry
   - pipeline smoke
@@ -197,21 +200,96 @@ On environments without GPU tools (`nvcc`, `ncu`) or without `API_KEY`:
   - multi-agent framework and LLM usage path
   - main single/multi mode
 
-## 12) Remaining Gaps / Risks
+## 12) Phase 1 Remaining Gaps / Risks
 
 1. Probe numeric precision calibration still needed for final scoring quality (especially bandwidth + L2 capacity).
 2. Real workload/evaluator-like end-to-end validation remains limited.
 3. `nsys`/`torch_profiler` are integrated as tool calls but not deeply fused into per-target scoring logic.
 4. Submission packaging (method report + evidence examples + error analysis) still pending.
 
-## 13) Recommended Next Priorities
+## 13) Phase 2 Foundation Status
+
+Phase 2-specific modules now added:
+
+- `profiler_agent/phase2/harness.py`
+- `profiler_agent/phase2/generator.py`
+- `profiler_agent/phase2/optimizer.py`
+- `profiler_agent/phase2/candidate_store.py`
+- `profiler_agent/phase2/prompts.py`
+
+Implemented Phase 2 foundation behaviors:
+
+- LoRA reference/operator-side harness primitives exist
+- correctness metric helpers exist (`max_abs_err`, `rel_l2_err`)
+- benchmark helper exists (`warmup`, repeated timings, median runtime)
+- LLM-first candidate generation for single-file `optimized_lora.cu` exists
+- bootstrap candidate path exists when LLM is unavailable or invalid
+- optimizer loop can track candidate history and promote best-so-far
+- root `optimized_lora.cu` persistence is now implemented in the candidate store
+- `.agent_artifacts/phase2_state.json` and `.agent_artifacts/phase2_report.json` are written
+
+Still missing for full Phase 2 readiness:
+
+- real CUDA compile/load/evaluate harness for `optimized_lora.cu`
+- real PyTorch-backed end-to-end correctness execution against generated candidate code
+- real latency benchmark comparison against baseline implementation
+- `run.sh` switch-over to the Phase 2 workflow
+- profiling-guided revision loop using real `ncu` outputs on candidate kernels
+
+## 14) Phase Shift Assessment
+
+The project requirement has changed in Phase 2.
+
+Phase 2 is **not** a small extension of Phase 1 metric profiling. It is a different agent problem:
+
+- input/evaluator path changes to `bash run.sh`
+- final artifact becomes root `optimized_lora.cu`
+- correctness against PyTorch is a hard gate
+- performance is measured as speedup on LoRA operator workloads
+- single-file final implementation is mandatory
+
+Current repository is **not yet submission-ready for Phase 2**, but it already contains reusable building blocks:
+
+- LLM client and multi-agent orchestration
+- runtime tool probing
+- compile/run/profile helpers
+- iterative code generation and repair patterns
+- some Phase 2-oriented tests and design notes
+
+Main remaining gap:
+
+- the dedicated LoRA optimization loop now exists only at foundation level and still lacks real CUDA execution/evaluation
+- the repository runtime still centers on `results/evidence/analysis` instead of `optimized_lora.cu`
+
+## 15) Phase 2 Refactor Plan
+
+Canonical design document for the next phase:
+
+- [PHASE2_REFACTOR_PLAN_LORA_OPTIMIZATION.md](</workspace/PHASE2_REFACTOR_PLAN_LORA_OPTIMIZATION.md>)
+
+That document defines:
+
+- Phase 2 evaluator contract
+- gap analysis against current repository
+- proposed module layout
+- staged refactor plan
+- recommended immediate next steps
+
+## 16) Recommended Next Priorities
 
 1. Run evaluator-like workloads and capture reproducibility/variance.
 2. Calibrate target-specific probe parameters and confidence mapping.
 3. Expand score fusion with workload-level signals (`nsys`, `torch_profiler`) where meaningful.
 4. Finalize submission report and demo script.
 
-## 14) Quick Commands
+For Phase 2 specifically, the recommended next engineering sequence is:
+
+1. connect the Phase 2 optimizer to a real CUDA compile/load/evaluate harness
+2. benchmark generated candidates against a true baseline implementation
+3. add real profile summaries into candidate feedback
+4. rewire `run.sh` to the new Phase 2 workflow after harness stability
+
+## 17) Quick Commands
 
 Single mode:
 ```powershell
@@ -236,11 +314,17 @@ $env:PROFILER_AGENT_DISABLE_STATIC_FALLBACK="1"
 python -m profiler_agent.main --mode single --spec inputs/target_spec.json --out outputs
 ```
 
-## 15) Machine-Readable Snapshot
+## 18) Machine-Readable Snapshot
 ```yaml
 project: gpu-prof-agent
-phase: "1.7 hardware intrinsic profiling"
-updated_at: "2026-04-13"
+updated_at: "2026-05-07"
+repository_status:
+  phase1_mainline: implemented
+  phase2_submission_ready: false
+  phase2_plan_doc: PHASE2_REFACTOR_PLAN_LORA_OPTIMIZATION.md
+  phase2_foundation_modules: implemented
+phase1:
+  phase: "1.7 hardware intrinsic profiling"
 io_contract:
   input: target_spec.json
   required_input_fields: [targets, run]
@@ -255,7 +339,10 @@ status:
   strict_codegen_mode: implemented
   detector_layer: implemented
   result_normalization: implemented
-  tests: "35/35 passing"
+  phase2_harness_foundation: implemented
+  phase2_candidate_generation: implemented
+  phase2_root_artifact_persistence: implemented
+  tests_last_verified: "115/115 passing"
 llm_config:
   api_key_env: API_KEY
   base_url_env: OPENAI_BASE_URL
@@ -276,7 +363,7 @@ open_risks:
   - "real workload validation breadth limited"
   - "nsys/torch_profiler not deeply fused into scoring"
 next_priority:
-  - "evaluator-like e2e validation"
-  - "probe parameter calibration"
-  - "final submission report packaging"
+  - "connect phase2 optimizer to real CUDA candidate evaluation"
+  - "benchmark generated optimized_lora.cu against baseline implementation"
+  - "rewire run.sh to the phase2 contract"
 ```

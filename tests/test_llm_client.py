@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import io
+import shutil
 import urllib.error
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 from profiler_agent.multi_agent.llm_client import OpenAICompatibleConfig, OpenAICompatibleLLMClient
 
@@ -36,6 +38,11 @@ class LlmClientTests(unittest.TestCase):
                 timeout_s=3,
             )
         )
+        self.tmp_dir = Path("tests/.tmp") / f"llm_client_{uuid4().hex}"
+        self.tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def _run_with_payload(self, payload: dict) -> dict | None:
         raw = json.dumps(payload, ensure_ascii=False)
@@ -99,11 +106,7 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(parsed, {"risk_level": "high"})
 
     def test_complete_json_writes_debug_record_when_enabled(self) -> None:
-        out_dir = Path("tests/.tmp")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        debug_path = out_dir / "llm_debug.jsonl"
-        if debug_path.exists():
-            debug_path.unlink()
+        debug_path = self.tmp_dir / "llm_debug.jsonl"
         payload = {
             "choices": [
                 {
@@ -126,11 +129,7 @@ class LlmClientTests(unittest.TestCase):
         self.assertIn("raw_response", row)
 
     def test_complete_json_writes_disabled_record(self) -> None:
-        out_dir = Path("tests/.tmp")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        debug_path = out_dir / "llm_debug_disabled.jsonl"
-        if debug_path.exists():
-            debug_path.unlink()
+        debug_path = self.tmp_dir / "llm_debug_disabled.jsonl"
         disabled_client = OpenAICompatibleLLMClient(
             OpenAICompatibleConfig(
                 api_key="",
@@ -147,11 +146,7 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(row.get("phase"), "llm_disabled")
 
     def test_complete_json_writes_http_error_details(self) -> None:
-        out_dir = Path("tests/.tmp")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        debug_path = out_dir / "llm_debug_http_error.jsonl"
-        if debug_path.exists():
-            debug_path.unlink()
+        debug_path = self.tmp_dir / "llm_debug_http_error.jsonl"
         err = urllib.error.HTTPError(
             url="https://example.invalid/v1/chat/completions",
             code=401,
@@ -173,11 +168,7 @@ class LlmClientTests(unittest.TestCase):
             self.assertIn("invalid_api_key", body_excerpt)
 
     def test_complete_json_retries_on_timeout_then_succeeds(self) -> None:
-        out_dir = Path("tests/.tmp")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        debug_path = out_dir / "llm_debug_retry.jsonl"
-        if debug_path.exists():
-            debug_path.unlink()
+        debug_path = self.tmp_dir / "llm_debug_retry.jsonl"
         payload = {
             "choices": [
                 {

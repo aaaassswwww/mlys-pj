@@ -5,17 +5,21 @@ WORKSPACE_DIR="/workspace"
 SPEC_PATH="/target/target_spec.json"
 ARTIFACT_DIR="${WORKSPACE_DIR}/.agent_artifacts"
 FINAL_OUTPUT="${WORKSPACE_DIR}/output.json"
+FINAL_KERNEL="${WORKSPACE_DIR}/optimized_lora.cu"
 export PROFILER_AGENT_ENABLE_TIME_BUDGET="${PROFILER_AGENT_ENABLE_TIME_BUDGET:-1}"
 export PROFILER_AGENT_MAX_RUNTIME_SECONDS="${PROFILER_AGENT_MAX_RUNTIME_SECONDS:-1740}"
 export PROFILER_AGENT_SHELL_TIMEOUT_SECONDS="${PROFILER_AGENT_SHELL_TIMEOUT_SECONDS:-1755}"
+export PROFILER_AGENT_PHASE2_ITERATIONS="${PROFILER_AGENT_PHASE2_ITERATIONS:-2}"
 TIME_BUDGET_ENABLED="${PROFILER_AGENT_ENABLE_TIME_BUDGET}"
 MAX_RUNTIME_SECONDS="${PROFILER_AGENT_MAX_RUNTIME_SECONDS}"
 SHELL_TIMEOUT_SECONDS="${PROFILER_AGENT_SHELL_TIMEOUT_SECONDS}"
+PHASE2_ITERATIONS="${PROFILER_AGENT_PHASE2_ITERATIONS}"
 
 cd "${WORKSPACE_DIR}"
 
 # Keep exactly one /workspace/output.* artifact for evaluator pickup.
 find "${WORKSPACE_DIR}" -maxdepth 1 -type f -name "output.*" -delete || true
+rm -f "${FINAL_KERNEL}"
 
 echo "[run.sh] Using target spec: ${SPEC_PATH}"
 if [[ -f "${SPEC_PATH}" ]]; then
@@ -30,29 +34,29 @@ fi
 rm -rf "${ARTIFACT_DIR}"
 mkdir -p "${ARTIFACT_DIR}"
 
-# Multi-agent entrypoint (internally reuses stable pipeline execution).
+# Phase 2 entrypoint: optimize and keep root-level optimized_lora.cu updated.
 RUN_RC=0
 if [[ "${TIME_BUDGET_ENABLED}" == "1" || "${TIME_BUDGET_ENABLED}" == "true" || "${TIME_BUDGET_ENABLED}" == "yes" || "${TIME_BUDGET_ENABLED}" == "on" ]]; then
   echo "[run.sh] Time budget enabled: ${MAX_RUNTIME_SECONDS}s"
   if command -v timeout >/dev/null 2>&1; then
     timeout "${SHELL_TIMEOUT_SECONDS}s" python3 -m profiler_agent.main \
-      --mode multi \
-      --spec "${SPEC_PATH}" \
-      --out "${ARTIFACT_DIR}" || RUN_RC=$?
+      --mode phase2 \
+      --out "${WORKSPACE_DIR}" \
+      --phase2-iterations "${PHASE2_ITERATIONS}" || RUN_RC=$?
   else
     python3 -m profiler_agent.main \
-      --mode multi \
-      --spec "${SPEC_PATH}" \
-      --out "${ARTIFACT_DIR}" || RUN_RC=$?
+      --mode phase2 \
+      --out "${WORKSPACE_DIR}" \
+      --phase2-iterations "${PHASE2_ITERATIONS}" || RUN_RC=$?
   fi
 else
   python3 -m profiler_agent.main \
-    --mode multi \
-    --spec "${SPEC_PATH}" \
-    --out "${ARTIFACT_DIR}" || RUN_RC=$?
+    --mode phase2 \
+    --out "${WORKSPACE_DIR}" \
+    --phase2-iterations "${PHASE2_ITERATIONS}" || RUN_RC=$?
 fi
 
-# Package required single-file report artifact.
+# Package compatibility report artifact while keeping optimized_lora.cu as primary output.
 export RUN_RC
 python3 - <<'PY'
 import json
@@ -62,6 +66,9 @@ from pathlib import Path
 workspace = Path("/workspace")
 artifacts = workspace / ".agent_artifacts"
 spec_path = Path("/target/target_spec.json")
+kernel_path = workspace / "optimized_lora.cu"
+phase2_state_path = artifacts / "phase2_state.json"
+phase2_report_path = artifacts / "phase2_report.json"
 
 raw_spec = {"targets": []}
 if spec_path.exists():
@@ -69,10 +76,6 @@ if spec_path.exists():
         raw_spec = json.loads(spec_path.read_text(encoding="utf-8"))
     except Exception:
         raw_spec = {"targets": []}
-
-requested_targets = raw_spec.get("targets", [])
-if not isinstance(requested_targets, list):
-    requested_targets = []
 
 def load_or_default(path: Path, default):
     if not path.exists():
@@ -82,50 +85,24 @@ def load_or_default(path: Path, default):
     except Exception:
         return default
 
-results_default = {str(target): 0.0 for target in requested_targets if str(target).strip()}
-evidence_default = {
-    "run": {"command": "", "returncode": 0, "stdout_tail": "", "stderr_tail": ""},
-    "targets": {},
-}
-analysis_default = {
-    "bound_type": "unknown",
-    "confidence": 0.0,
-    "bottlenecks": [],
-}
-
-results = load_or_default(artifacts / "results.json", results_default)
-evidence = load_or_default(artifacts / "evidence.json", evidence_default)
-analysis = load_or_default(artifacts / "analysis.json", analysis_default)
+phase2_state = load_or_default(phase2_state_path, {})
+phase2_report = load_or_default(phase2_report_path, {})
 
 run_rc = int(os.environ.get("RUN_RC", "0") or "0")
-time_budget = evidence.get("time_budget")
-timed_out = isinstance(time_budget, dict) and bool(time_budget.get("timed_out"))
-if run_rc == 124 and timed_out:
-    timeout_note = "outer_shell_timeout_triggered_partial_artifacts_were_packaged"
-    evidence.setdefault("time_budget", {})
-    evidence["time_budget"]["shell_timeout_triggered"] = True
-    evidence["time_budget"]["reason"] = timeout_note
-    notes = analysis.get("analysis_notes")
-    if not isinstance(notes, list):
-        notes = []
-    notes.append(timeout_note)
-    analysis["analysis_notes"] = notes
+timed_out = run_rc == 124
 
 payload = {
-    "results": results,
-    "evidence": evidence,
-    "analysis": analysis,
+    "mode": "phase2",
+    "phase2": {
+        "optimized_lora_exists": kernel_path.exists(),
+        "optimized_lora_path": str(kernel_path),
+        "phase2_state": phase2_state,
+        "phase2_report": phase2_report,
+        "timed_out": timed_out,
+    },
+    "target_spec_echo": raw_spec,
+    "run_rc": run_rc,
 }
-
-plan = artifacts / "multi_agent_plan.json"
-trace = artifacts / "multi_agent_trace.json"
-agent_state = artifacts / "agent_state.json"
-if plan.exists():
-    payload["multi_agent_plan"] = json.loads(plan.read_text(encoding="utf-8"))
-if trace.exists():
-    payload["multi_agent_trace"] = json.loads(trace.read_text(encoding="utf-8"))
-if agent_state.exists():
-    payload["agent_state"] = json.loads(agent_state.read_text(encoding="utf-8"))
 
 (workspace / "output.json").write_text(
     json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
