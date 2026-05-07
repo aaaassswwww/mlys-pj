@@ -25,7 +25,15 @@ class Phase2GeneratorTests(unittest.TestCase):
         mock_llm.complete_json.return_value = {
             "candidate_id": "cand one",
             "rationale": "tile on tokens first",
-            "source_code": '#include <cuda_runtime.h>\n__global__ void k() {}\n',
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '__global__ void k() {}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
         }
         generator = LoraCandidateGenerator(llm_client=mock_llm)
         candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=1), feedback=None)
@@ -61,7 +69,15 @@ class Phase2GeneratorTests(unittest.TestCase):
             mock_llm.complete_json.return_value = {
                 "candidate_id": "cand-two",
                 "explanation": "generated from alias key",
-                "code": '#include <cuda_runtime.h>\n__global__ void k() {}\n',
+                "code": (
+                    '#include <cuda_runtime.h>\n'
+                    '__global__ void k() {}\n'
+                    'extern "C" void launch_optimized_lora('
+                    'const float* W, const float* X, const float* A, const float* B, '
+                    'float* Y, int d, int n, cudaStream_t stream) {\n'
+                    '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                    '}\n'
+                ),
             }
             generator = LoraCandidateGenerator(llm_client=mock_llm, debug_dir=root)
             candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=2), feedback=None)
@@ -73,6 +89,43 @@ class Phase2GeneratorTests(unittest.TestCase):
             self.assertIn("code", record["payload_keys"])
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+    def test_generate_candidate_rejects_mismatched_entrypoint_signature(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "bad-sig",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '__global__ void k() {}\n'
+                'extern "C" void launch_optimized_lora('
+                'float* Y, const float* W, const float* X, const float* A, const float* B, '
+                'int d, int r, int n, cudaStream_t stream) {}\n'
+            ),
+        }
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=3), feedback=None)
+        self.assertEqual(candidate.source, "bootstrap_template")
+        self.assertIn("missing_or_mismatched_launch_optimized_lora_signature", candidate.rationale)
+
+    def test_generate_candidate_rejects_main_function(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "has-main",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '__global__ void k() {}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {}\n'
+                'int main() { return 0; }\n'
+            ),
+        }
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=4), feedback=None)
+        self.assertEqual(candidate.source, "bootstrap_template")
+        self.assertIn("contains_forbidden_main_function", candidate.rationale)
 
 
 if __name__ == "__main__":

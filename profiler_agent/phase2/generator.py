@@ -10,6 +10,19 @@ from profiler_agent.phase2.models import GeneratedCandidate, Phase2OptimizerStat
 from profiler_agent.phase2.prompts import build_lora_generation_system_prompt, build_lora_generation_user_prompt
 
 _SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
+_ENTRYPOINT_SIGNATURE_RE = re.compile(
+    r'extern\s+"C"\s+void\s+launch_optimized_lora\s*\(\s*'
+    r'const\s+float\s*\*\s*W\s*,\s*'
+    r'const\s+float\s*\*\s*X\s*,\s*'
+    r'const\s+float\s*\*\s*A\s*,\s*'
+    r'const\s+float\s*\*\s*B\s*,\s*'
+    r'float\s*\*\s*Y\s*,\s*'
+    r'int\s+d\s*,\s*'
+    r'int\s+n\s*,\s*'
+    r'cudaStream_t\s+stream\s*'
+    r'\)',
+    flags=re.DOTALL,
+)
 
 
 def _strip_fenced_code(text: str) -> str:
@@ -42,6 +55,10 @@ def _validate_source_code(source_code: str) -> tuple[bool, str]:
         return False, "contains_local_include_not_allowed_for_single_file_submission"
     if "__global__" not in source_code and "cuda" not in lowered:
         return False, "missing_cuda_shape"
+    if re.search(r"\bint\s+main\s*\(", source_code):
+        return False, "contains_forbidden_main_function"
+    if not _ENTRYPOINT_SIGNATURE_RE.search(source_code):
+        return False, "missing_or_mismatched_launch_optimized_lora_signature"
     return True, ""
 
 
