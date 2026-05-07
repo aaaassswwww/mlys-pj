@@ -306,7 +306,8 @@ class Phase2EvaluatorTests(unittest.TestCase):
             self.assertTrue(evaluation.correctness.passed)
             self.assertEqual(evaluation.speedup, 2.0)
             self.assertEqual(evaluation.notes, ["child_ok"])
-            self.assertTrue(seen_command[1].endswith("runtime_eval_worker.py"))
+            self.assertEqual(seen_command[1], "-c")
+            self.assertIn("runtime_eval_worker", seen_command[2])
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -332,6 +333,36 @@ class Phase2EvaluatorTests(unittest.TestCase):
                 )
             self.assertFalse(evaluation.correctness.passed)
             self.assertIn("runtime_subprocess_failed:returncode=7", evaluation.notes)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_subprocess_runtime_evaluator_raises_on_child_startup_failure(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_subproc_startup_fail_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            paths = build_candidate_artifact_paths(root, "cand-subproc-startup-fail")
+            paths.source_path.write_text("// x\n", encoding="utf-8")
+            paths.library_path.write_text("fake-lib", encoding="utf-8")
+            runtime = build_subprocess_runtime_evaluator(
+                root_dir=root,
+                problem_specs=[LoraProblemSpec(hidden_dim=8, output_dim=4, num_tokens=3, device="cpu")],
+                warmup_runs=0,
+                measured_runs=2,
+            )
+            completed = subprocess.CompletedProcess(
+                args=["python"],
+                returncode=1,
+                stdout="",
+                stderr="/usr/bin/python3: can't open file '/workspace/profiler_agent/phase2/runtime_eval_worker.py': [Errno 2] No such file or directory\n",
+            )
+            with patch("profiler_agent.phase2.evaluator.subprocess.run", return_value=completed):
+                with self.assertRaises(RuntimeError) as ctx:
+                    runtime(
+                        GeneratedCandidate(candidate_id="cand-subproc-startup-fail", source_code="// x"),
+                        paths,
+                        LoadResult(ok=True, library_path=str(paths.library_path), symbol_name="launch_optimized_lora"),
+                    )
+            self.assertIn("runtime_subprocess_startup_failed", str(ctx.exception))
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

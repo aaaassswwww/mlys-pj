@@ -254,6 +254,38 @@ class Phase2OptimizerTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_optimizer_persists_partial_state_when_runtime_subprocess_startup_fails(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_opt_subproc_startup_fail_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+
+        def generator(state: Phase2OptimizerState, feedback):
+            _ = state, feedback
+            return GeneratedCandidate(candidate_id="cand-startup-fail", source_code="// broken")
+
+        def evaluator(candidate: GeneratedCandidate) -> CandidateEvaluation:
+            _ = candidate
+            raise RuntimeError("runtime_subprocess_startup_failed:returncode=1")
+
+        try:
+            with self.assertRaises(RuntimeError):
+                run_phase2_optimization(
+                    root_dir=root,
+                    max_iterations=2,
+                    candidate_generator=generator,
+                    candidate_evaluator=evaluator,
+                    bootstrap_candidate=LoraCandidateGenerator(llm_client=None).bootstrap_candidate(),
+                )
+
+            report_path = root / ".agent_artifacts" / "phase2_report.json"
+            state_path = root / ".agent_artifacts" / "phase2_state.json"
+            self.assertTrue(report_path.exists())
+            self.assertTrue(state_path.exists())
+            state_json = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(state_json["iteration"], 1)
+            self.assertFalse(state_json["done"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

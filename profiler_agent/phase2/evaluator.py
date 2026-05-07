@@ -88,10 +88,6 @@ def _subprocess_timeout_seconds() -> int:
     return max(30, value)
 
 
-def _runtime_eval_worker_path(root_dir: Path) -> Path:
-    return root_dir / "profiler_agent" / "phase2" / "runtime_eval_worker.py"
-
-
 def _build_subprocess_env(root_dir: Path) -> dict[str, str]:
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "").strip()
@@ -102,6 +98,25 @@ def _build_subprocess_env(root_dir: Path) -> dict[str, str]:
     else:
         env["PYTHONPATH"] = root_text
     return env
+
+
+def _runtime_eval_worker_bootstrap() -> str:
+    return (
+        "from profiler_agent.phase2.runtime_eval_worker import main as _main\n"
+        "raise SystemExit(_main())\n"
+    )
+
+
+def _looks_like_subprocess_startup_failure(stderr: str) -> bool:
+    lowered = (stderr or "").lower()
+    markers = (
+        "no module named profiler_agent.phase2.runtime_eval_worker",
+        "can't open file",
+        "modulenotfounderror",
+        "importerror",
+        "traceback (most recent call last):",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 def _candidate_evaluation_from_dict(payload: dict[str, Any]) -> CandidateEvaluation:
@@ -574,7 +589,8 @@ def build_subprocess_runtime_evaluator(
 
         command = [
             sys.executable,
-            str(_runtime_eval_worker_path(root_dir)),
+            "-c",
+            _runtime_eval_worker_bootstrap(),
             "--request",
             str(request_path),
             "--response",
@@ -599,11 +615,17 @@ def build_subprocess_runtime_evaluator(
             )
 
         if completed.returncode != 0:
+            stderr_tail = tail_text(completed.stderr or "", 500)
+            if _looks_like_subprocess_startup_failure(stderr_tail):
+                raise RuntimeError(
+                    f"runtime_subprocess_startup_failed:returncode={completed.returncode}:"
+                    f"{stderr_tail}"
+                )
             return _runtime_failure_evaluation(
                 candidate_id=candidate.candidate_id,
                 notes=[
                     f"runtime_subprocess_failed:returncode={completed.returncode}",
-                    f"runtime_subprocess_stderr:{tail_text(completed.stderr or '', 500)}",
+                    f"runtime_subprocess_stderr:{stderr_tail}",
                 ],
                 rtol=rtol,
                 atol=atol,
