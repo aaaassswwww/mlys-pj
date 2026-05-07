@@ -34,67 +34,78 @@ def run_phase2_optimization(
     state = Phase2OptimizerState()
     last_feedback: dict[str, object] | None = None
     best_path: Path | None = None
-    if bootstrap_candidate is not None:
-        best_path = write_best_candidate(root_dir, source_code=bootstrap_candidate.source_code, state=state)
-        state.llm_revision_history.append(
-            {
-                "iteration": 0,
-                "candidate_id": bootstrap_candidate.candidate_id,
-                "rationale": bootstrap_candidate.rationale,
-                "feedback": {"bootstrap": True},
-                "source": bootstrap_candidate.source,
-            }
-        )
+    def persist() -> None:
+        write_phase2_state(root_dir, state=state)
+        write_phase2_report(root_dir, state=state, best_candidate_path=best_path)
 
-    for iteration in range(1, max_iterations + 1):
-        state.iteration = iteration
-        candidate = candidate_generator(state, last_feedback)
-        evaluation = candidate_evaluator(candidate)
-
-        promoted = record_candidate_evaluation(
-            state,
-            candidate_id=candidate.candidate_id,
-            source_code=candidate.source_code,
-            evaluation=evaluation,
-        )
-        if promoted:
-            best_path = write_best_candidate(root_dir, source_code=candidate.source_code, state=state)
-
-        if not evaluation.correctness.passed:
-            state.correctness_failures.append(
+    try:
+        if bootstrap_candidate is not None:
+            best_path = write_best_candidate(root_dir, source_code=bootstrap_candidate.source_code, state=state)
+            state.llm_revision_history.append(
                 {
-                    "candidate_id": candidate.candidate_id,
-                    "max_abs_err": evaluation.correctness.max_abs_err,
-                    "rel_l2_err": evaluation.correctness.rel_l2_err,
+                    "iteration": 0,
+                    "candidate_id": bootstrap_candidate.candidate_id,
+                    "rationale": bootstrap_candidate.rationale,
+                    "feedback": {"bootstrap": True},
+                    "source": bootstrap_candidate.source,
                 }
             )
+            persist()
 
-        last_feedback = build_candidate_feedback(
-            compile_ok=bool(evaluation.compilation.ok) if evaluation.compilation is not None else True,
-            correctness=evaluation.correctness.to_dict(),
-            benchmark={
-                "student_median_runtime_ms": evaluation.student_benchmark.median_runtime_ms,
-                "reference_median_runtime_ms": evaluation.reference_benchmark.median_runtime_ms,
-                "speedup": evaluation.speedup,
-            },
-            profile={
-                "compilation": evaluation.compilation.to_dict() if evaluation.compilation is not None else {},
-                "load": evaluation.load.to_dict() if evaluation.load is not None else {},
-            },
-        )
-        state.llm_revision_history.append(
-            {
-                "iteration": iteration,
-                "candidate_id": candidate.candidate_id,
-                "rationale": candidate.rationale,
-                "feedback": last_feedback,
-                "source": candidate.source,
-            }
-        )
+        for iteration in range(1, max_iterations + 1):
+            state.iteration = iteration
+            persist()
 
-    state.done = True
-    write_phase2_state(root_dir, state=state)
-    write_phase2_report(root_dir, state=state, best_candidate_path=best_path)
+            candidate = candidate_generator(state, last_feedback)
+            evaluation = candidate_evaluator(candidate)
+
+            promoted = record_candidate_evaluation(
+                state,
+                candidate_id=candidate.candidate_id,
+                source_code=candidate.source_code,
+                evaluation=evaluation,
+            )
+            if promoted:
+                best_path = write_best_candidate(root_dir, source_code=candidate.source_code, state=state)
+
+            if not evaluation.correctness.passed:
+                state.correctness_failures.append(
+                    {
+                        "candidate_id": candidate.candidate_id,
+                        "max_abs_err": evaluation.correctness.max_abs_err,
+                        "rel_l2_err": evaluation.correctness.rel_l2_err,
+                    }
+                )
+
+            last_feedback = build_candidate_feedback(
+                compile_ok=bool(evaluation.compilation.ok) if evaluation.compilation is not None else True,
+                correctness=evaluation.correctness.to_dict(),
+                benchmark={
+                    "student_median_runtime_ms": evaluation.student_benchmark.median_runtime_ms,
+                    "reference_median_runtime_ms": evaluation.reference_benchmark.median_runtime_ms,
+                    "speedup": evaluation.speedup,
+                },
+                profile={
+                    "compilation": evaluation.compilation.to_dict() if evaluation.compilation is not None else {},
+                    "load": evaluation.load.to_dict() if evaluation.load is not None else {},
+                },
+            )
+            state.llm_revision_history.append(
+                {
+                    "iteration": iteration,
+                    "candidate_id": candidate.candidate_id,
+                    "rationale": candidate.rationale,
+                    "feedback": last_feedback,
+                    "source": candidate.source,
+                }
+            )
+            persist()
+
+        state.done = True
+        persist()
+    except Exception:
+        persist()
+        raise
 
     return Phase2OptimizationResult(
         best_candidate_id=state.current_best_candidate_id,
