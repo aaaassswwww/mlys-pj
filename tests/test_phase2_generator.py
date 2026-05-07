@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import unittest
 from pathlib import Path
@@ -48,6 +49,28 @@ class Phase2GeneratorTests(unittest.TestCase):
             generator = LoraCandidateGenerator(llm_client=None)
             path = write_candidate_snapshot(root, generator.bootstrap_candidate(), filename="optimized_lora.cu")
             self.assertTrue(path.exists())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_generate_candidate_accepts_code_alias_and_writes_debug_record(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_generator_debug_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            mock_llm = Mock()
+            mock_llm.is_enabled.return_value = True
+            mock_llm.complete_json.return_value = {
+                "candidate_id": "cand-two",
+                "explanation": "generated from alias key",
+                "code": '#include <cuda_runtime.h>\n__global__ void k() {}\n',
+            }
+            generator = LoraCandidateGenerator(llm_client=mock_llm, debug_dir=root)
+            candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=2), feedback=None)
+            self.assertEqual(candidate.source, "llm_generated")
+            debug_path = root / "phase2_codegen_iter_02.json"
+            self.assertTrue(debug_path.exists())
+            record = json.loads(debug_path.read_text(encoding="utf-8"))
+            self.assertEqual(record["candidate_source"], "llm_generated")
+            self.assertIn("code", record["payload_keys"])
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

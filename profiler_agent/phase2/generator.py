@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -90,8 +91,9 @@ def build_bootstrap_lora_source() -> str:
 
 
 class LoraCandidateGenerator:
-    def __init__(self, llm_client: LLMClient | None = None) -> None:
+    def __init__(self, llm_client: LLMClient | None = None, *, debug_dir: Path | None = None) -> None:
         self.llm_client = llm_client if llm_client is not None else OpenAICompatibleLLMClient.from_env()
+        self.debug_dir = debug_dir
 
     def is_enabled(self) -> bool:
         return self.llm_client is not None and self.llm_client.is_enabled()
@@ -104,6 +106,48 @@ class LoraCandidateGenerator:
             source="bootstrap_template",
         )
 
+    def _write_generation_debug(
+        self,
+        *,
+        iteration: int,
+        payload: dict[str, Any] | None,
+        fallback_reason: str,
+        candidate: GeneratedCandidate,
+    ) -> None:
+        if self.debug_dir is None:
+            return
+        try:
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
+            record = {
+                "iteration": iteration,
+                "fallback_reason": fallback_reason,
+                "candidate_id": candidate.candidate_id,
+                "candidate_source": candidate.source,
+                "candidate_rationale": candidate.rationale,
+                "payload_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
+                "payload_preview": payload if isinstance(payload, dict) else None,
+            }
+            path = self.debug_dir / f"phase2_codegen_iter_{iteration:02d}.json"
+            path.write_text(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        except OSError:
+            return
+
+    @staticmethod
+    def _extract_source_code(payload: dict[str, Any]) -> str:
+        for key in ("source_code", "code", "source", "kernel_code", "cuda_code"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+
+    @staticmethod
+    def _extract_rationale(payload: dict[str, Any]) -> str:
+        for key in ("rationale", "reasoning_summary", "explanation", "notes"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+
     def generate_candidate(
         self,
         *,
@@ -113,12 +157,19 @@ class LoraCandidateGenerator:
         default_id = f"iter-{state.iteration:02d}"
         if not self.is_enabled():
             bootstrap = self.bootstrap_candidate()
-            return GeneratedCandidate(
+            candidate = GeneratedCandidate(
                 candidate_id=default_id,
                 source_code=bootstrap.source_code,
                 rationale="llm_disabled_using_bootstrap_candidate",
                 source="bootstrap_template",
             )
+            self._write_generation_debug(
+                iteration=state.iteration,
+                payload=None,
+                fallback_reason="llm_disabled",
+                candidate=candidate,
+            )
+            return candidate
 
         payload = self.llm_client.complete_json(
             system_prompt=build_lora_generation_system_prompt(),
@@ -130,42 +181,70 @@ class LoraCandidateGenerator:
         )
         if not isinstance(payload, dict):
             fallback = self.bootstrap_candidate()
-            return GeneratedCandidate(
+            candidate = GeneratedCandidate(
                 candidate_id=default_id,
                 source_code=fallback.source_code,
                 rationale="llm_returned_no_json_fallback_to_bootstrap",
                 source="bootstrap_template",
             )
+            self._write_generation_debug(
+                iteration=state.iteration,
+                payload=None,
+                fallback_reason="llm_returned_no_json",
+                candidate=candidate,
+            )
+            return candidate
 
-        source_code = payload.get("source_code")
-        rationale = payload.get("rationale", "")
+        source_code = self._extract_source_code(payload)
+        rationale = self._extract_rationale(payload)
         candidate_id = payload.get("candidate_id", default_id)
         if not isinstance(source_code, str) or not source_code.strip():
             fallback = self.bootstrap_candidate()
-            return GeneratedCandidate(
+            candidate = GeneratedCandidate(
                 candidate_id=default_id,
                 source_code=fallback.source_code,
                 rationale="llm_missing_source_code_fallback_to_bootstrap",
                 source="bootstrap_template",
             )
+            self._write_generation_debug(
+                iteration=state.iteration,
+                payload=payload,
+                fallback_reason="llm_missing_source_code",
+                candidate=candidate,
+            )
+            return candidate
 
         normalized = _normalize_source_code(source_code)
         ok, error = _validate_source_code(normalized)
         if not ok:
             fallback = self.bootstrap_candidate()
-            return GeneratedCandidate(
+            candidate = GeneratedCandidate(
                 candidate_id=default_id,
                 source_code=fallback.source_code,
                 rationale=f"llm_generated_invalid_source_fallback:{error}",
                 source="bootstrap_template",
             )
+            self._write_generation_debug(
+                iteration=state.iteration,
+                payload=payload,
+                fallback_reason=f"llm_generated_invalid_source:{error}",
+                candidate=candidate,
+            )
+            return candidate
 
-        return GeneratedCandidate(
+        candidate = GeneratedCandidate(
             candidate_id=_sanitize_candidate_id(str(candidate_id), default=default_id),
             source_code=normalized,
             rationale=str(rationale) if isinstance(rationale, str) else "",
             source="llm_generated",
         )
+        self._write_generation_debug(
+            iteration=state.iteration,
+            payload=payload,
+            fallback_reason="",
+            candidate=candidate,
+        )
+        return candidate
 
 
 def write_candidate_snapshot(root_dir: Path, candidate: GeneratedCandidate, *, filename: str) -> Path:

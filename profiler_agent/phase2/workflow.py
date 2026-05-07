@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -70,7 +71,16 @@ def run_default_phase2_workflow(
     warmup_runs: int = 3,
     measured_runs: int = 7,
 ) -> Phase2OptimizationResult:
-    generator = LoraCandidateGenerator(llm_client=llm_client)
+    artifacts_dir = root_dir / ".agent_artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    llm_debug_path = artifacts_dir / "phase2_llm_debug.jsonl"
+    if not os.environ.get("PROFILER_AGENT_LLM_DEBUG_PATH", "").strip():
+        os.environ["PROFILER_AGENT_LLM_DEBUG_PATH"] = str(llm_debug_path)
+
+    generator = LoraCandidateGenerator(
+        llm_client=llm_client,
+        debug_dir=artifacts_dir / "phase2_codegen_debug",
+    )
     evaluator = build_default_phase2_candidate_evaluator(
         root_dir=root_dir,
         problem_specs=problem_specs,

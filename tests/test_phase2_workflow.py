@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import unittest
@@ -69,6 +70,11 @@ class Phase2WorkflowTests(unittest.TestCase):
             self.assertTrue(state_json["done"])
             self.assertGreaterEqual(report_json["candidate_history_count"], 2)
             self.assertIn("recent_candidates", report_json)
+            self.assertTrue((root / ".agent_artifacts" / "phase2_codegen_debug").exists())
+            self.assertEqual(
+                os.environ.get("PROFILER_AGENT_LLM_DEBUG_PATH"),
+                str(root / ".agent_artifacts" / "phase2_llm_debug.jsonl"),
+            )
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
