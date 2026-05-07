@@ -285,9 +285,11 @@ class Phase2EvaluatorTests(unittest.TestCase):
                 warmup_runs=0,
                 measured_runs=2,
             )
+            seen_command: list[str] = []
 
-            def fake_run(command, capture_output, text, check, timeout, cwd):
-                _ = command, capture_output, text, check, timeout, cwd
+            def fake_run(command, capture_output, text, check, timeout, cwd, env):
+                _ = capture_output, text, check, timeout, cwd, env
+                seen_command[:] = command
                 response_path = paths.source_path.parent / "runtime_eval_response.json"
                 response_path.write_text(
                     '{"candidate_id":"cand-subproc","correctness":{"passed":true,"max_abs_err":0.0,"rel_l2_err":0.0,"rtol":0.0001,"atol":0.0001},"student_benchmark":{"warmup_runs":0,"measured_runs":2,"median_runtime_ms":1.0,"min_runtime_ms":1.0,"max_runtime_ms":1.0,"all_runtime_ms":[1.0,1.0]},"reference_benchmark":{"warmup_runs":0,"measured_runs":2,"median_runtime_ms":2.0,"min_runtime_ms":2.0,"max_runtime_ms":2.0,"all_runtime_ms":[2.0,2.0]},"speedup":2.0,"notes":["child_ok"]}',
@@ -304,6 +306,7 @@ class Phase2EvaluatorTests(unittest.TestCase):
             self.assertTrue(evaluation.correctness.passed)
             self.assertEqual(evaluation.speedup, 2.0)
             self.assertEqual(evaluation.notes, ["child_ok"])
+            self.assertTrue(seen_command[1].endswith("runtime_eval_worker.py"))
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

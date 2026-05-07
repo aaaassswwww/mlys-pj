@@ -88,6 +88,22 @@ def _subprocess_timeout_seconds() -> int:
     return max(30, value)
 
 
+def _runtime_eval_worker_path(root_dir: Path) -> Path:
+    return root_dir / "profiler_agent" / "phase2" / "runtime_eval_worker.py"
+
+
+def _build_subprocess_env(root_dir: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "").strip()
+    root_text = str(root_dir)
+    if existing:
+        if root_text not in existing.split(os.pathsep):
+            env["PYTHONPATH"] = root_text + os.pathsep + existing
+    else:
+        env["PYTHONPATH"] = root_text
+    return env
+
+
 def _candidate_evaluation_from_dict(payload: dict[str, Any]) -> CandidateEvaluation:
     correctness_data = payload.get("correctness") or {}
     student_data = payload.get("student_benchmark") or {}
@@ -558,8 +574,7 @@ def build_subprocess_runtime_evaluator(
 
         command = [
             sys.executable,
-            "-m",
-            "profiler_agent.phase2.runtime_eval_worker",
+            str(_runtime_eval_worker_path(root_dir)),
             "--request",
             str(request_path),
             "--response",
@@ -573,6 +588,7 @@ def build_subprocess_runtime_evaluator(
                 check=False,
                 timeout=_subprocess_timeout_seconds(),
                 cwd=str(root_dir),
+                env=_build_subprocess_env(root_dir),
             )
         except subprocess.TimeoutExpired as exc:
             return _runtime_failure_evaluation(
