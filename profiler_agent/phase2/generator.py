@@ -23,6 +23,14 @@ _ENTRYPOINT_SIGNATURE_RE = re.compile(
     r'\)',
     flags=re.DOTALL,
 )
+_SHARED_RUNTIME_RANK_RE = re.compile(
+    r'(?:__shared__|__attribute__\s*\(\(\s*shared\s*\)\))\s+[^;\n\[]+\[[^\]\n]*\br\b[^\]\n]*\]',
+    flags=re.IGNORECASE,
+)
+_FORBIDDEN_HOST_TEST_RE = re.compile(
+    r"\b(?:int\s+main\s*\(|run_lora_forward\s*\(|cudaMemcpy(?:Async)?\s*\([^;]*cudaMemcpyHostToDevice)",
+    flags=re.IGNORECASE,
+)
 
 
 def _strip_fenced_code(text: str) -> str:
@@ -57,8 +65,14 @@ def _validate_source_code(source_code: str) -> tuple[bool, str]:
         return False, "missing_cuda_shape"
     if re.search(r"\bint\s+main\s*\(", source_code):
         return False, "contains_forbidden_main_function"
+    if _FORBIDDEN_HOST_TEST_RE.search(source_code):
+        return False, "contains_forbidden_host_side_test_harness"
     if not _ENTRYPOINT_SIGNATURE_RE.search(source_code):
         return False, "missing_or_mismatched_launch_optimized_lora_signature"
+    if re.search(r"launch_optimized_lora\s*\([^)]*\bint\s+r\b", source_code):
+        return False, "launch_optimized_lora_must_not_accept_runtime_rank_parameter"
+    if _SHARED_RUNTIME_RANK_RE.search(source_code):
+        return False, "contains_runtime_rank_sized_shared_array"
     return True, ""
 
 

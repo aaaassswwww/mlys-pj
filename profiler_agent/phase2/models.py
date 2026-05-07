@@ -103,6 +103,7 @@ class Phase2OptimizerState:
     benchmark_history: list[dict[str, Any]] = field(default_factory=list)
     llm_revision_history: list[dict[str, Any]] = field(default_factory=list)
     done: bool = False
+    stop_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

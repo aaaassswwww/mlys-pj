@@ -127,6 +127,49 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertEqual(candidate.source, "bootstrap_template")
         self.assertIn("contains_forbidden_main_function", candidate.rationale)
 
+    def test_generate_candidate_rejects_runtime_rank_sized_shared_arrays(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "shared-rank",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '__global__ void k(int r) {\n'
+                '  __attribute__((shared)) float a_tile[64 * r];\n'
+                '}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
+        }
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=5), feedback=None)
+        self.assertEqual(candidate.source, "bootstrap_template")
+        self.assertIn("contains_runtime_rank_sized_shared_array", candidate.rationale)
+
+    def test_generate_candidate_rejects_host_side_test_harness(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "host-harness",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '__global__ void k() {}\n'
+                'void run_lora_forward() { cudaMemcpy(0, 0, 0, cudaMemcpyHostToDevice); }\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
+        }
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=6), feedback=None)
+        self.assertEqual(candidate.source, "bootstrap_template")
+        self.assertIn("contains_forbidden_host_side_test_harness", candidate.rationale)
+
 
 if __name__ == "__main__":
     unittest.main()

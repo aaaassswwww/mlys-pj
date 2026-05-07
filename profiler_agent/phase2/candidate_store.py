@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from profiler_agent.phase2.models import CandidateEvaluation, Phase2OptimizerState
+from profiler_agent.runtime_budget import get_runtime_budget_status
 
 
 def record_candidate_evaluation(
@@ -79,14 +80,17 @@ def write_phase2_report(
 ) -> Path:
     report_path = root_dir / ".agent_artifacts" / "phase2_report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
+    budget = get_runtime_budget_status()
     payload = {
         "current_best_candidate_id": state.current_best_candidate_id,
         "best_speedup": state.best_speedup,
         "iterations_run": state.iteration,
+        "stop_reason": state.stop_reason,
         "candidate_history_count": len(state.candidate_history),
         "correctness_failures_count": len(state.correctness_failures),
         "compile_errors_count": len(state.compile_errors),
         "optimized_lora_path": str(best_candidate_path) if best_candidate_path is not None else "",
+        "runtime_budget": budget,
         "recent_candidates": [
             {
                 "candidate_id": entry.get("candidate_id"),

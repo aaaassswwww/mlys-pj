@@ -63,7 +63,7 @@ def build_default_phase2_candidate_evaluator(
 def run_default_phase2_workflow(
     *,
     root_dir: Path,
-    max_iterations: int = 2,
+    max_iterations: int | None = None,
     llm_client: LLMClient | None = None,
     problem_specs: list[LoraProblemSpec] | None = None,
     candidate_runner: Callable[[GeneratedCandidate, Any, Any, LoraProblemSpec, dict[str, Any], Any], Any] | None = None,

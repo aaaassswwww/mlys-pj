@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -12,6 +13,46 @@ from profiler_agent.phase2.candidate_store import (
     write_phase2_state,
 )
 from profiler_agent.phase2.models import CandidateEvaluation, GeneratedCandidate, Phase2OptimizerState
+from profiler_agent.runtime_budget import get_runtime_budget_status
+
+
+def _phase2_stop_buffer_seconds() -> float:
+    timeout_raw = str(os.environ.get("OPENAI_TIMEOUT_S", "")).strip()
+    try:
+        llm_timeout = float(timeout_raw) if timeout_raw else 120.0
+    except ValueError:
+        llm_timeout = 120.0
+    default_buffer = max(90.0, llm_timeout + 15.0)
+    raw = str(os.environ.get("PROFILER_AGENT_PHASE2_STOP_BUFFER_SECONDS", "")).strip()
+    if not raw:
+        return default_buffer
+    try:
+        value = float(raw)
+    except ValueError:
+        return default_buffer
+    return max(0.0, value)
+
+
+def _should_stop_before_next_iteration() -> tuple[bool, str]:
+    budget = get_runtime_budget_status()
+    if not budget.get("enabled", False):
+        return False, ""
+    if budget.get("expired", False):
+        return True, "runtime_budget_expired"
+    remaining = float(budget.get("remaining_seconds") or 0.0)
+    stop_buffer = _phase2_stop_buffer_seconds()
+    if remaining <= stop_buffer:
+        return True, f"remaining_runtime_below_stop_buffer:{remaining:.3f}s<={stop_buffer:.3f}s"
+    return False, ""
+
+
+def _normalize_iteration_limit(max_iterations: int | None) -> int | None:
+    if max_iterations is not None and max_iterations > 0:
+        return int(max_iterations)
+    budget = get_runtime_budget_status()
+    if budget.get("enabled", False):
+        return None
+    return 2
 
 
 @dataclass(frozen=True)
@@ -26,7 +67,7 @@ class Phase2OptimizationResult:
 def run_phase2_optimization(
     *,
     root_dir: Path,
-    max_iterations: int,
+    max_iterations: int | None,
     candidate_generator: Callable[[Phase2OptimizerState, dict[str, object] | None], GeneratedCandidate],
     candidate_evaluator: Callable[[GeneratedCandidate], CandidateEvaluation],
     bootstrap_candidate: GeneratedCandidate | None = None,
@@ -34,6 +75,7 @@ def run_phase2_optimization(
     state = Phase2OptimizerState()
     last_feedback: dict[str, object] | None = None
     best_path: Path | None = None
+    effective_max_iterations = _normalize_iteration_limit(max_iterations)
     def persist() -> None:
         write_phase2_state(root_dir, state=state)
         write_phase2_report(root_dir, state=state, best_candidate_path=best_path)
@@ -52,7 +94,16 @@ def run_phase2_optimization(
             )
             persist()
 
-        for iteration in range(1, max_iterations + 1):
+        iteration = 1
+        while True:
+            if effective_max_iterations is not None and iteration > effective_max_iterations:
+                state.stop_reason = f"max_iterations_reached:{effective_max_iterations}"
+                break
+            should_stop, stop_reason = _should_stop_before_next_iteration()
+            if should_stop:
+                state.stop_reason = stop_reason
+                break
+
             state.iteration = iteration
             persist()
 
@@ -100,7 +151,10 @@ def run_phase2_optimization(
                 }
             )
             persist()
+            iteration += 1
 
+        if not state.stop_reason:
+            state.stop_reason = "completed_without_explicit_stop_reason"
         state.done = True
         persist()
     except Exception:

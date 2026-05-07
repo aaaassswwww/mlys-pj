@@ -32,8 +32,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--phase2-iterations",
         type=int,
-        default=2,
-        help="maximum optimization iterations for phase2 workflow",
+        default=0,
+        help="maximum optimization iterations for phase2 workflow; 0 means iterate until time budget stop",
     )
     return parser.parse_args()
 
@@ -55,7 +55,7 @@ def main() -> int:
     if args.mode == "phase2":
         result = run_default_phase2_workflow(
             root_dir=args.out,
-            max_iterations=max(1, int(args.phase2_iterations)),
+            max_iterations=(None if int(args.phase2_iterations) <= 0 else int(args.phase2_iterations)),
         )
         print(f"optimized_lora.cu: {result.optimized_lora_path or (args.out / 'optimized_lora.cu')}")
         print(f"phase2_state.json: {args.out / '.agent_artifacts' / 'phase2_state.json'}")

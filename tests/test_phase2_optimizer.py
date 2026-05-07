@@ -4,6 +4,7 @@ import json
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from profiler_agent.phase2.generator import LoraCandidateGenerator
@@ -149,6 +150,63 @@ class Phase2OptimizerTests(unittest.TestCase):
             self.assertFalse(state_json["done"])
             self.assertEqual(report_json["iterations_run"], 1)
             self.assertEqual(report_json["candidate_history_count"], 0)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_optimizer_uses_time_budget_when_iteration_limit_is_unbounded(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_opt_budget_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            generated_ids: list[str] = []
+
+            def generator(state: Phase2OptimizerState, feedback):
+                _ = feedback
+                candidate_id = f"cand-{state.iteration}"
+                generated_ids.append(candidate_id)
+                return GeneratedCandidate(candidate_id=candidate_id, source_code=f"// {candidate_id}")
+
+            def evaluator(candidate: GeneratedCandidate) -> CandidateEvaluation:
+                correctness = CorrectnessResult(passed=False, max_abs_err=1.0, rel_l2_err=1.0, rtol=1e-4, atol=1e-4)
+                bench = BenchmarkResult(
+                    warmup_runs=0,
+                    measured_runs=0,
+                    median_runtime_ms=0.0,
+                    min_runtime_ms=0.0,
+                    max_runtime_ms=0.0,
+                    all_runtime_ms=[],
+                )
+                return CandidateEvaluation(
+                    candidate_id=candidate.candidate_id,
+                    correctness=correctness,
+                    student_benchmark=bench,
+                    reference_benchmark=bench,
+                    speedup=0.0,
+                )
+
+            budget_states = [
+                {"enabled": True, "expired": False, "remaining_seconds": 500.0},
+                {"enabled": True, "expired": False, "remaining_seconds": 500.0},
+                {"enabled": True, "expired": False, "remaining_seconds": 500.0},
+                {"enabled": True, "expired": False, "remaining_seconds": 10.0},
+            ]
+
+            def fake_budget_status():
+                if budget_states:
+                    return budget_states.pop(0)
+                return {"enabled": True, "expired": True, "remaining_seconds": 0.0}
+
+            with patch("profiler_agent.phase2.optimizer.get_runtime_budget_status", side_effect=fake_budget_status):
+                with patch.dict("os.environ", {"PROFILER_AGENT_PHASE2_STOP_BUFFER_SECONDS": "30"}, clear=False):
+                    result = run_phase2_optimization(
+                        root_dir=root,
+                        max_iterations=None,
+                        candidate_generator=generator,
+                        candidate_evaluator=evaluator,
+                    )
+
+            self.assertEqual(result.iterations_run, 2)
+            self.assertEqual(result.state.stop_reason, "remaining_runtime_below_stop_buffer:10.000s<=30.000s")
+            self.assertEqual(generated_ids, ["cand-1", "cand-2"])
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

@@ -17,7 +17,13 @@ def build_lora_generation_system_prompt() -> str:
         "const float* W, const float* X, const float* A, const float* B, "
         "float* Y, int d, int n, cudaStream_t stream). "
         "Do not define main(). Do not add host-side testing scaffolds, example drivers, "
-        "or alternate exported entrypoints."
+        "or alternate exported entrypoints. "
+        "All tensors use row-major layout. Treat W as [d, d], X as [d, n], A as [d, 16], "
+        "B as [d, 16], and Y as [d, n]. The required math is: "
+        "temp[k, j] = sum_i B[i, k] * X[i, j], and "
+        "Y[i, j] = sum_t W[i, t] * X[t, j] + sum_k A[i, k] * temp[k, j]. "
+        "Assume the low rank is fixed to 16 at compile time; do not introduce a runtime rank parameter. "
+        "Avoid variable-length shared-memory arrays and avoid shared-memory declarations whose size depends on runtime variables."
     )
 
 
@@ -37,6 +43,17 @@ def build_lora_generation_user_prompt(
             "forbid_hidden_final_answer": True,
             "hidden_dim_range": [3584, 4608],
             "low_rank": 16,
+            "layout": {
+                "W": "[d, d] row-major",
+                "X": "[d, n] row-major",
+                "A": "[d, 16] row-major",
+                "B": "[d, 16] row-major",
+                "Y": "[d, n] row-major",
+            },
+            "required_math": {
+                "temp[k, j]": "sum_i B[i, k] * X[i, j]",
+                "Y[i, j]": "sum_t W[i, t] * X[t, j] + sum_k A[i, k] * temp[k, j]",
+            },
             "required_entrypoint": {
                 "name": "launch_optimized_lora",
                 "language_linkage": "extern C",
@@ -53,6 +70,8 @@ def build_lora_generation_user_prompt(
             },
             "forbid_main_function": True,
             "forbid_host_side_test_harness": True,
+            "forbid_runtime_rank_parameter": True,
+            "forbid_variable_length_shared_arrays": True,
         },
         "expected_json": {
             "candidate_id": "short_identifier",
