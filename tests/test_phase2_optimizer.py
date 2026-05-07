@@ -114,6 +114,10 @@ class Phase2OptimizerTests(unittest.TestCase):
             self.assertEqual(report_json["correctness_failures_count"], 1)
             self.assertEqual(report_json["candidate_history_count"], 1)
             self.assertEqual(len(report_json["recent_candidates"]), 1)
+            promoted_source = (root / "optimized_lora.cu").read_text(encoding="utf-8")
+            self.assertEqual(promoted_source, "// bad")
+            self.assertEqual(state_json["current_best_candidate_id"], "bad")
+            self.assertIsNone(state_json["current_best_correct_candidate_id"])
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

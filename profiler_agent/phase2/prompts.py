@@ -4,6 +4,18 @@ import json
 from typing import Any
 
 
+def _extract_previous_rel_l2_err(feedback: dict[str, Any] | None) -> float | None:
+    if not isinstance(feedback, dict):
+        return None
+    correctness = feedback.get("correctness")
+    if not isinstance(correctness, dict):
+        return None
+    value = correctness.get("rel_l2_err")
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def build_lora_generation_system_prompt() -> str:
     return (
         "You are generating a single-file CUDA C++ candidate for LoRA operator optimization. "
@@ -23,7 +35,8 @@ def build_lora_generation_system_prompt() -> str:
         "temp[k, j] = sum_i B[i, k] * X[i, j], and "
         "Y[i, j] = sum_t W[i, t] * X[t, j] + sum_k A[i, k] * temp[k, j]. "
         "Assume the low rank is fixed to 16 at compile time; do not introduce a runtime rank parameter. "
-        "Avoid variable-length shared-memory arrays and avoid shared-memory declarations whose size depends on runtime variables."
+        "Avoid variable-length shared-memory arrays and avoid shared-memory declarations whose size depends on runtime variables. "
+        "If previous correctness is close but still failing, prioritize correctness over speed: prefer simpler kernels, deterministic writes, full initialization before any += accumulation, and double-precision accumulators for long reductions."
     )
 
 
@@ -33,10 +46,18 @@ def build_lora_generation_user_prompt(
     best_speedup: float,
     feedback: dict[str, Any] | None,
 ) -> str:
+    previous_rel_l2_err = _extract_previous_rel_l2_err(feedback)
+    optimization_priority = "balanced"
+    candidate_strategy = "normal_iteration"
+    if previous_rel_l2_err is not None and previous_rel_l2_err <= 1e-3:
+        optimization_priority = "correctness_first"
+        candidate_strategy = "simplify_and_stabilize_numeric_accuracy"
     payload = {
         "task": "generate_lora_candidate",
         "iteration": iteration,
         "operator": "Y = W X + A(B^T X)",
+        "optimization_priority": optimization_priority,
+        "candidate_strategy": candidate_strategy,
         "constraints": {
             "single_file_output": True,
             "forbid_external_downloads": True,
@@ -72,6 +93,13 @@ def build_lora_generation_user_prompt(
             "forbid_host_side_test_harness": True,
             "forbid_runtime_rank_parameter": True,
             "forbid_variable_length_shared_arrays": True,
+            "when_correctness_is_close_but_failing": [
+                "prefer correctness over speed",
+                "prefer simpler kernels over aggressive fusion",
+                "use double accumulators for long dot products when needed",
+                "fully initialize outputs before any += accumulation",
+                "avoid relying on shared-memory contents across tiles unless they are explicitly reloaded each iteration",
+            ],
         },
         "expected_json": {
             "candidate_id": "short_identifier",

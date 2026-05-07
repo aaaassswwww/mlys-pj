@@ -82,6 +82,44 @@ class Phase2HarnessTests(unittest.TestCase):
         )
         self.assertTrue(promoted)
         self.assertEqual(state.current_best_candidate_id, "cand-1")
+        self.assertEqual(state.current_best_correct_candidate_id, "cand-1")
+
+    def test_candidate_store_promotes_best_incorrect_candidate_until_correct_one_exists(self) -> None:
+        state = Phase2OptimizerState()
+        bench = benchmark_callable(lambda: None, backend=PythonListBackend(), warmup_runs=0, measured_runs=1, timer_fn=iter([0.0, 0.001]).__next__)
+
+        first = CandidateEvaluation(
+            candidate_id="cand-a",
+            correctness=check_correctness([[1.1]], [[1.0]], backend=PythonListBackend(), atol=1e-6, rtol=1e-6),
+            student_benchmark=bench,
+            reference_benchmark=bench,
+            speedup=0.0,
+        )
+        second = CandidateEvaluation(
+            candidate_id="cand-b",
+            correctness=check_correctness([[1.01]], [[1.0]], backend=PythonListBackend(), atol=1e-6, rtol=1e-6),
+            student_benchmark=bench,
+            reference_benchmark=bench,
+            speedup=0.0,
+        )
+
+        promoted_first = record_candidate_evaluation(
+            state,
+            candidate_id="cand-a",
+            source_code="// cand-a",
+            evaluation=first,
+        )
+        promoted_second = record_candidate_evaluation(
+            state,
+            candidate_id="cand-b",
+            source_code="// cand-b",
+            evaluation=second,
+        )
+
+        self.assertTrue(promoted_first)
+        self.assertTrue(promoted_second)
+        self.assertEqual(state.current_best_candidate_id, "cand-b")
+        self.assertIsNone(state.current_best_correct_candidate_id)
 
     def test_write_best_candidate_persists_source_and_state(self) -> None:
         root = Path("tests/.tmp") / f"phase2_store_{uuid4().hex}"
@@ -97,4 +135,3 @@ class Phase2HarnessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

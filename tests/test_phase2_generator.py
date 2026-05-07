@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from profiler_agent.phase2.generator import LoraCandidateGenerator, write_candidate_snapshot
 from profiler_agent.phase2.models import Phase2OptimizerState
+from profiler_agent.phase2.prompts import build_lora_generation_user_prompt
 
 
 class Phase2GeneratorTests(unittest.TestCase):
@@ -169,6 +170,21 @@ class Phase2GeneratorTests(unittest.TestCase):
         candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=6), feedback=None)
         self.assertEqual(candidate.source, "bootstrap_template")
         self.assertIn("contains_forbidden_host_side_test_harness", candidate.rationale)
+
+    def test_user_prompt_switches_to_correctness_first_when_error_is_small(self) -> None:
+        prompt = build_lora_generation_user_prompt(
+            iteration=7,
+            best_speedup=0.0,
+            feedback={
+                "correctness": {
+                    "passed": False,
+                    "rel_l2_err": 4.2e-4,
+                    "max_abs_err": 0.65,
+                }
+            },
+        )
+        self.assertIn('"optimization_priority": "correctness_first"', prompt)
+        self.assertIn("double accumulators for long dot products", prompt)
 
 
 if __name__ == "__main__":

@@ -96,7 +96,10 @@ class CandidateEvaluation:
 class Phase2OptimizerState:
     iteration: int = 0
     current_best_candidate_id: str | None = None
+    current_best_correct_candidate_id: str | None = None
     best_speedup: float = 0.0
+    best_rel_l2_err: float = float("inf")
+    best_max_abs_err: float = float("inf")
     candidate_history: list[dict[str, Any]] = field(default_factory=list)
     compile_errors: list[dict[str, Any]] = field(default_factory=list)
     correctness_failures: list[dict[str, Any]] = field(default_factory=list)

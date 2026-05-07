@@ -9,6 +9,16 @@ from profiler_agent.phase2.models import CandidateEvaluation, Phase2OptimizerSta
 from profiler_agent.runtime_budget import get_runtime_budget_status
 
 
+def _is_better_incorrect_candidate(state: Phase2OptimizerState, evaluation: CandidateEvaluation) -> bool:
+    rel_l2_err = float(evaluation.correctness.rel_l2_err)
+    max_abs_err = float(evaluation.correctness.max_abs_err)
+    if rel_l2_err < float(state.best_rel_l2_err):
+        return True
+    if rel_l2_err > float(state.best_rel_l2_err):
+        return False
+    return max_abs_err < float(state.best_max_abs_err)
+
+
 def record_candidate_evaluation(
     state: Phase2OptimizerState,
     *,
@@ -43,6 +53,14 @@ def record_candidate_evaluation(
     promoted = False
     if evaluation.correctness.passed and evaluation.speedup >= state.best_speedup:
         state.best_speedup = float(evaluation.speedup)
+        state.best_rel_l2_err = float(evaluation.correctness.rel_l2_err)
+        state.best_max_abs_err = float(evaluation.correctness.max_abs_err)
+        state.current_best_candidate_id = candidate_id
+        state.current_best_correct_candidate_id = candidate_id
+        promoted = True
+    elif state.current_best_correct_candidate_id is None and _is_better_incorrect_candidate(state, evaluation):
+        state.best_rel_l2_err = float(evaluation.correctness.rel_l2_err)
+        state.best_max_abs_err = float(evaluation.correctness.max_abs_err)
         state.current_best_candidate_id = candidate_id
         promoted = True
     return promoted
@@ -83,7 +101,10 @@ def write_phase2_report(
     budget = get_runtime_budget_status()
     payload = {
         "current_best_candidate_id": state.current_best_candidate_id,
+        "current_best_correct_candidate_id": state.current_best_correct_candidate_id,
         "best_speedup": state.best_speedup,
+        "best_rel_l2_err": state.best_rel_l2_err,
+        "best_max_abs_err": state.best_max_abs_err,
         "iterations_run": state.iteration,
         "stop_reason": state.stop_reason,
         "candidate_history_count": len(state.candidate_history),
