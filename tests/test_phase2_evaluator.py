@@ -13,6 +13,7 @@ from profiler_agent.phase2.evaluator import (
     build_ctypes_candidate_runner,
     build_harness_runtime_evaluator,
     build_nvcc_shared_library_command,
+    build_subprocess_runtime_evaluator,
     invoke_launch_optimized_lora,
     load_compiled_candidate,
 )
@@ -203,6 +204,28 @@ class Phase2EvaluatorTests(unittest.TestCase):
         self.assertFalse(evaluation.correctness.passed)
         self.assertIn("candidate_runner_error:hidden_dim=8:RuntimeError", evaluation.notes)
 
+    def test_harness_runtime_evaluator_converts_fatal_cuda_error_to_failure_result(self) -> None:
+        specs = [LoraProblemSpec(hidden_dim=8, output_dim=4, num_tokens=3, device="cpu")]
+
+        def candidate_runner(candidate, paths, load_result, spec, inputs, backend):
+            _ = candidate, paths, load_result, spec, inputs, backend
+            raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+        runtime = build_harness_runtime_evaluator(
+            problem_specs=specs,
+            candidate_runner=candidate_runner,
+            backend=PythonListBackend(),
+            warmup_runs=0,
+            measured_runs=2,
+        )
+        evaluation = runtime(
+            GeneratedCandidate(candidate_id="cand-fatal", source_code="// x"),
+            build_candidate_artifact_paths(Path("tests/.tmp"), "cand-fatal"),
+            LoadResult(ok=True, library_path="x", symbol_name="launch_optimized_lora"),
+        )
+        self.assertFalse(evaluation.correctness.passed)
+        self.assertIn("fatal_cuda_runtime_error:hidden_dim=8:RuntimeError", evaluation.notes)
+
     def test_build_ctypes_candidate_runner_invokes_exported_symbol(self) -> None:
         class FakeTensor:
             def __init__(self, ptr: int) -> None:
@@ -248,6 +271,66 @@ class Phase2EvaluatorTests(unittest.TestCase):
         self.assertTrue(backend.synchronized)
         self.assertEqual(fake_symbol.called_args[0].value, 11)
         self.assertEqual(fake_symbol.called_args[7].value, 1234)
+
+    def test_subprocess_runtime_evaluator_reads_child_response(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_subproc_eval_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            paths = build_candidate_artifact_paths(root, "cand-subproc")
+            paths.source_path.write_text("// x\n", encoding="utf-8")
+            paths.library_path.write_text("fake-lib", encoding="utf-8")
+            runtime = build_subprocess_runtime_evaluator(
+                root_dir=root,
+                problem_specs=[LoraProblemSpec(hidden_dim=8, output_dim=4, num_tokens=3, device="cpu")],
+                warmup_runs=0,
+                measured_runs=2,
+            )
+
+            def fake_run(command, capture_output, text, check, timeout, cwd):
+                _ = command, capture_output, text, check, timeout, cwd
+                response_path = paths.source_path.parent / "runtime_eval_response.json"
+                response_path.write_text(
+                    '{"candidate_id":"cand-subproc","correctness":{"passed":true,"max_abs_err":0.0,"rel_l2_err":0.0,"rtol":0.0001,"atol":0.0001},"student_benchmark":{"warmup_runs":0,"measured_runs":2,"median_runtime_ms":1.0,"min_runtime_ms":1.0,"max_runtime_ms":1.0,"all_runtime_ms":[1.0,1.0]},"reference_benchmark":{"warmup_runs":0,"measured_runs":2,"median_runtime_ms":2.0,"min_runtime_ms":2.0,"max_runtime_ms":2.0,"all_runtime_ms":[2.0,2.0]},"speedup":2.0,"notes":["child_ok"]}',
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(args=["python"], returncode=0, stdout="", stderr="")
+
+            with patch("profiler_agent.phase2.evaluator.subprocess.run", side_effect=fake_run):
+                evaluation = runtime(
+                    GeneratedCandidate(candidate_id="cand-subproc", source_code="// x"),
+                    paths,
+                    LoadResult(ok=True, library_path=str(paths.library_path), symbol_name="launch_optimized_lora"),
+                )
+            self.assertTrue(evaluation.correctness.passed)
+            self.assertEqual(evaluation.speedup, 2.0)
+            self.assertEqual(evaluation.notes, ["child_ok"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_subprocess_runtime_evaluator_returns_failure_on_child_crash(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_subproc_fail_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            paths = build_candidate_artifact_paths(root, "cand-subproc-fail")
+            paths.source_path.write_text("// x\n", encoding="utf-8")
+            paths.library_path.write_text("fake-lib", encoding="utf-8")
+            runtime = build_subprocess_runtime_evaluator(
+                root_dir=root,
+                problem_specs=[LoraProblemSpec(hidden_dim=8, output_dim=4, num_tokens=3, device="cpu")],
+                warmup_runs=0,
+                measured_runs=2,
+            )
+            completed = subprocess.CompletedProcess(args=["python"], returncode=7, stdout="", stderr="child boom")
+            with patch("profiler_agent.phase2.evaluator.subprocess.run", return_value=completed):
+                evaluation = runtime(
+                    GeneratedCandidate(candidate_id="cand-subproc-fail", source_code="// x"),
+                    paths,
+                    LoadResult(ok=True, library_path=str(paths.library_path), symbol_name="launch_optimized_lora"),
+                )
+            self.assertFalse(evaluation.correctness.passed)
+            self.assertIn("runtime_subprocess_failed:returncode=7", evaluation.notes)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

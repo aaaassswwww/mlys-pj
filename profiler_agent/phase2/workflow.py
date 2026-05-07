@@ -9,6 +9,7 @@ from profiler_agent.phase2.evaluator import (
     build_compile_checked_candidate_evaluator,
     build_ctypes_candidate_runner,
     build_harness_runtime_evaluator,
+    build_subprocess_runtime_evaluator,
 )
 from profiler_agent.phase2.generator import LoraCandidateGenerator
 from profiler_agent.phase2.models import CandidateEvaluation, GeneratedCandidate, LoraProblemSpec
@@ -46,14 +47,23 @@ def build_default_phase2_candidate_evaluator(
     warmup_runs: int = 3,
     measured_runs: int = 7,
 ) -> Callable[[GeneratedCandidate], CandidateEvaluation]:
-    runtime_runner = candidate_runner or build_ctypes_candidate_runner()
-    runtime_evaluator = build_harness_runtime_evaluator(
-        problem_specs=problem_specs or default_problem_specs(),
-        candidate_runner=runtime_runner,
-        backend=backend,
-        warmup_runs=warmup_runs,
-        measured_runs=measured_runs,
-    )
+    specs = problem_specs or default_problem_specs()
+    if candidate_runner is None and backend is None:
+        runtime_evaluator = build_subprocess_runtime_evaluator(
+            root_dir=root_dir,
+            problem_specs=specs,
+            warmup_runs=warmup_runs,
+            measured_runs=measured_runs,
+        )
+    else:
+        runtime_runner = candidate_runner or build_ctypes_candidate_runner()
+        runtime_evaluator = build_harness_runtime_evaluator(
+            problem_specs=specs,
+            candidate_runner=runtime_runner,
+            backend=backend,
+            warmup_runs=warmup_runs,
+            measured_runs=measured_runs,
+        )
     return build_compile_checked_candidate_evaluator(
         root_dir=root_dir,
         runtime_evaluator=runtime_evaluator,

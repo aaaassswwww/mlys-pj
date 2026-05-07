@@ -46,6 +46,13 @@ def _should_stop_before_next_iteration() -> tuple[bool, str]:
     return False, ""
 
 
+def _fatal_evaluation_stop_reason(evaluation: CandidateEvaluation) -> str:
+    for note in evaluation.notes:
+        if isinstance(note, str) and note.startswith("fatal_cuda_runtime_error:"):
+            return note
+    return ""
+
+
 def _normalize_iteration_limit(max_iterations: int | None) -> int | None:
     if max_iterations is not None and max_iterations > 0:
         return int(max_iterations)
@@ -151,6 +158,10 @@ def run_phase2_optimization(
                 }
             )
             persist()
+            fatal_stop_reason = _fatal_evaluation_stop_reason(evaluation)
+            if fatal_stop_reason:
+                state.stop_reason = fatal_stop_reason
+                break
             iteration += 1
 
         if not state.stop_reason:

@@ -78,6 +78,24 @@ class Phase2WorkflowTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    @patch("profiler_agent.phase2.workflow.build_subprocess_runtime_evaluator")
+    def test_default_candidate_evaluator_prefers_subprocess_runtime_by_default(
+        self,
+        mock_build_subprocess_runtime: unittest.mock.Mock,
+    ) -> None:
+        root = Path("tests/.tmp") / f"phase2_workflow_subproc_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            mock_runtime = Mock()
+            mock_build_subprocess_runtime.return_value = mock_runtime
+            from profiler_agent.phase2.workflow import build_default_phase2_candidate_evaluator
+
+            evaluator = build_default_phase2_candidate_evaluator(root_dir=root)
+            self.assertTrue(callable(evaluator))
+            mock_build_subprocess_runtime.assert_called_once()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -210,6 +210,50 @@ class Phase2OptimizerTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_optimizer_stops_early_on_fatal_cuda_runtime_error_note(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_opt_fatal_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            generated_ids: list[str] = []
+
+            def generator(state: Phase2OptimizerState, feedback):
+                _ = feedback
+                candidate_id = f"cand-{state.iteration}"
+                generated_ids.append(candidate_id)
+                return GeneratedCandidate(candidate_id=candidate_id, source_code=f"// {candidate_id}")
+
+            def evaluator(candidate: GeneratedCandidate) -> CandidateEvaluation:
+                correctness = CorrectnessResult(passed=False, max_abs_err=float("inf"), rel_l2_err=float("inf"), rtol=1e-4, atol=1e-4)
+                bench = BenchmarkResult(
+                    warmup_runs=0,
+                    measured_runs=0,
+                    median_runtime_ms=0.0,
+                    min_runtime_ms=0.0,
+                    max_runtime_ms=0.0,
+                    all_runtime_ms=[],
+                )
+                return CandidateEvaluation(
+                    candidate_id=candidate.candidate_id,
+                    correctness=correctness,
+                    student_benchmark=bench,
+                    reference_benchmark=bench,
+                    speedup=0.0,
+                    notes=["fatal_cuda_runtime_error:hidden_dim=3584:RuntimeError"],
+                )
+
+            result = run_phase2_optimization(
+                root_dir=root,
+                max_iterations=5,
+                candidate_generator=generator,
+                candidate_evaluator=evaluator,
+            )
+
+            self.assertEqual(result.iterations_run, 1)
+            self.assertEqual(result.state.stop_reason, "fatal_cuda_runtime_error:hidden_dim=3584:RuntimeError")
+            self.assertEqual(generated_ids, ["cand-1"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

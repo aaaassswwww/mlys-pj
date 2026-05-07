@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -34,6 +36,114 @@ _ENTRYPOINT_SYMBOL = "launch_optimized_lora"
 class CandidateArtifactPaths:
     source_path: Path
     library_path: Path
+
+
+def _looks_like_fatal_cuda_runtime_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    fatal_markers = (
+        "illegal memory access",
+        "device-side assert",
+        "device side assert",
+        "unspecified launch failure",
+        "misaligned address",
+        "warp illegal address",
+        "cuda error",
+        "cublas_status_execution_failed",
+        "context is destroyed",
+    )
+    return any(marker in message for marker in fatal_markers)
+
+
+def _runtime_failure_evaluation(
+    *,
+    candidate_id: str,
+    notes: list[str],
+    rtol: float,
+    atol: float,
+) -> CandidateEvaluation:
+    return CandidateEvaluation(
+        candidate_id=candidate_id,
+        correctness=CorrectnessResult(
+            passed=False,
+            max_abs_err=float("inf"),
+            rel_l2_err=float("inf"),
+            rtol=rtol,
+            atol=atol,
+        ),
+        student_benchmark=empty_benchmark_result(),
+        reference_benchmark=empty_benchmark_result(),
+        speedup=0.0,
+        notes=notes,
+    )
+
+
+def _subprocess_timeout_seconds() -> int:
+    raw = str(os.environ.get("PROFILER_AGENT_PHASE2_SUBPROCESS_TIMEOUT_SECONDS", "")).strip()
+    if not raw:
+        return 600
+    try:
+        value = int(raw)
+    except ValueError:
+        return 600
+    return max(30, value)
+
+
+def _candidate_evaluation_from_dict(payload: dict[str, Any]) -> CandidateEvaluation:
+    correctness_data = payload.get("correctness") or {}
+    student_data = payload.get("student_benchmark") or {}
+    reference_data = payload.get("reference_benchmark") or {}
+    compilation_data = payload.get("compilation")
+    load_data = payload.get("load")
+    return CandidateEvaluation(
+        candidate_id=str(payload.get("candidate_id", "")),
+        correctness=CorrectnessResult(
+            passed=bool(correctness_data.get("passed", False)),
+            max_abs_err=float(correctness_data.get("max_abs_err", float("inf"))),
+            rel_l2_err=float(correctness_data.get("rel_l2_err", float("inf"))),
+            rtol=float(correctness_data.get("rtol", 1e-4)),
+            atol=float(correctness_data.get("atol", 1e-4)),
+        ),
+        student_benchmark=BenchmarkResult(
+            warmup_runs=int(student_data.get("warmup_runs", 0)),
+            measured_runs=int(student_data.get("measured_runs", 0)),
+            median_runtime_ms=float(student_data.get("median_runtime_ms", 0.0)),
+            min_runtime_ms=float(student_data.get("min_runtime_ms", 0.0)),
+            max_runtime_ms=float(student_data.get("max_runtime_ms", 0.0)),
+            all_runtime_ms=[float(x) for x in student_data.get("all_runtime_ms", [])],
+        ),
+        reference_benchmark=BenchmarkResult(
+            warmup_runs=int(reference_data.get("warmup_runs", 0)),
+            measured_runs=int(reference_data.get("measured_runs", 0)),
+            median_runtime_ms=float(reference_data.get("median_runtime_ms", 0.0)),
+            min_runtime_ms=float(reference_data.get("min_runtime_ms", 0.0)),
+            max_runtime_ms=float(reference_data.get("max_runtime_ms", 0.0)),
+            all_runtime_ms=[float(x) for x in reference_data.get("all_runtime_ms", [])],
+        ),
+        speedup=float(payload.get("speedup", 0.0)),
+        notes=[str(x) for x in payload.get("notes", [])],
+        compilation=(
+            CompilationResult(
+                ok=bool(compilation_data.get("ok", False)),
+                command=[str(x) for x in compilation_data.get("command", [])],
+                returncode=int(compilation_data.get("returncode", 0)),
+                stdout_tail=str(compilation_data.get("stdout_tail", "")),
+                stderr_tail=str(compilation_data.get("stderr_tail", "")),
+                output_path=str(compilation_data.get("output_path", "")),
+            )
+            if isinstance(compilation_data, dict)
+            else None
+        ),
+        load=(
+            LoadResult(
+                ok=bool(load_data.get("ok", False)),
+                library_path=str(load_data.get("library_path", "")),
+                symbol_name=str(load_data.get("symbol_name", _ENTRYPOINT_SYMBOL)),
+                error=str(load_data.get("error", "")),
+            )
+            if isinstance(load_data, dict)
+            else None
+        ),
+    )
 
 
 def _aggregate_benchmarks(items: list[BenchmarkResult]) -> BenchmarkResult:
@@ -297,54 +407,85 @@ def build_harness_runtime_evaluator(
         notes: list[str] = []
 
         for spec in problem_specs:
-            inputs = generate_lora_inputs(spec, backend=runtime_backend)
-            reference_output = ref_runner(inputs, runtime_backend)
+            try:
+                inputs = generate_lora_inputs(spec, backend=runtime_backend)
+                reference_output = ref_runner(inputs, runtime_backend)
+            except Exception as exc:
+                if _looks_like_fatal_cuda_runtime_error(exc):
+                    notes.append(f"fatal_cuda_runtime_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                else:
+                    notes.append(f"runtime_environment_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                return _runtime_failure_evaluation(
+                    candidate_id=candidate.candidate_id,
+                    notes=notes,
+                    rtol=rtol,
+                    atol=atol,
+                )
             try:
                 student_output = candidate_runner(candidate, paths, load_result, spec, inputs, runtime_backend)
             except Exception as exc:
-                notes.append(f"candidate_runner_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
-                return CandidateEvaluation(
+                if _looks_like_fatal_cuda_runtime_error(exc):
+                    notes.append(f"fatal_cuda_runtime_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                else:
+                    notes.append(f"candidate_runner_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                return _runtime_failure_evaluation(
                     candidate_id=candidate.candidate_id,
-                    correctness=CorrectnessResult(
-                        passed=False,
-                        max_abs_err=float("inf"),
-                        rel_l2_err=float("inf"),
-                        rtol=rtol,
-                        atol=atol,
-                    ),
-                    student_benchmark=empty_benchmark_result(),
-                    reference_benchmark=empty_benchmark_result(),
-                    speedup=0.0,
                     notes=notes,
+                    rtol=rtol,
+                    atol=atol,
                 )
-            correctness = check_correctness(
-                student_output,
-                reference_output,
-                backend=runtime_backend,
-                rtol=rtol,
-                atol=atol,
-            )
+            try:
+                correctness = check_correctness(
+                    student_output,
+                    reference_output,
+                    backend=runtime_backend,
+                    rtol=rtol,
+                    atol=atol,
+                )
+            except Exception as exc:
+                if _looks_like_fatal_cuda_runtime_error(exc):
+                    notes.append(f"fatal_cuda_runtime_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                else:
+                    notes.append(f"correctness_check_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                return _runtime_failure_evaluation(
+                    candidate_id=candidate.candidate_id,
+                    notes=notes,
+                    rtol=rtol,
+                    atol=atol,
+                )
             correctness_results.append(correctness)
             if not correctness.passed:
                 notes.append(f"correctness_failed:hidden_dim={spec.hidden_dim}")
                 continue
 
-            reference_benchmarks.append(
-                benchmark_callable(
-                    lambda i=inputs: ref_runner(i, runtime_backend),
-                    backend=runtime_backend,
-                    warmup_runs=warmup_runs,
-                    measured_runs=measured_runs,
+            try:
+                reference_benchmarks.append(
+                    benchmark_callable(
+                        lambda i=inputs: ref_runner(i, runtime_backend),
+                        backend=runtime_backend,
+                        warmup_runs=warmup_runs,
+                        measured_runs=measured_runs,
+                    )
                 )
-            )
-            student_benchmarks.append(
-                benchmark_callable(
-                    lambda s=spec, i=inputs: candidate_runner(candidate, paths, load_result, s, i, runtime_backend),
-                    backend=runtime_backend,
-                    warmup_runs=warmup_runs,
-                    measured_runs=measured_runs,
+                student_benchmarks.append(
+                    benchmark_callable(
+                        lambda s=spec, i=inputs: candidate_runner(candidate, paths, load_result, s, i, runtime_backend),
+                        backend=runtime_backend,
+                        warmup_runs=warmup_runs,
+                        measured_runs=measured_runs,
+                    )
                 )
-            )
+            except Exception as exc:
+                if _looks_like_fatal_cuda_runtime_error(exc):
+                    notes.append(f"fatal_cuda_runtime_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                else:
+                    notes.append(f"benchmark_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                return _runtime_failure_evaluation(
+                    candidate_id=candidate.candidate_id,
+                    notes=notes,
+                    rtol=rtol,
+                    atol=atol,
+                )
 
         overall_passed = all(item.passed for item in correctness_results)
         max_abs_err = max((item.max_abs_err for item in correctness_results), default=0.0)
@@ -374,6 +515,107 @@ def build_harness_runtime_evaluator(
             speedup=speedup,
             notes=notes,
         )
+
+    return runtime_evaluator
+
+
+def build_subprocess_runtime_evaluator(
+    *,
+    root_dir: Path,
+    problem_specs: list[LoraProblemSpec],
+    warmup_runs: int = 3,
+    measured_runs: int = 7,
+    rtol: float = 1e-4,
+    atol: float = 1e-4,
+) -> Callable[[GeneratedCandidate, CandidateArtifactPaths, LoadResult], CandidateEvaluation]:
+    def runtime_evaluator(candidate: GeneratedCandidate, paths: CandidateArtifactPaths, load_result: LoadResult) -> CandidateEvaluation:
+        candidate_dir = paths.source_path.parent
+        request_path = candidate_dir / "runtime_eval_request.json"
+        response_path = candidate_dir / "runtime_eval_response.json"
+        request_payload = {
+            "candidate_id": candidate.candidate_id,
+            "library_path": str(paths.library_path),
+            "load_result": load_result.to_dict(),
+            "problem_specs": [
+                {
+                    "hidden_dim": spec.hidden_dim,
+                    "low_rank": spec.low_rank,
+                    "output_dim": spec.output_dim,
+                    "num_tokens": spec.num_tokens,
+                    "dtype": spec.dtype,
+                    "device": spec.device,
+                }
+                for spec in problem_specs
+            ],
+            "warmup_runs": warmup_runs,
+            "measured_runs": measured_runs,
+            "rtol": rtol,
+            "atol": atol,
+        }
+        request_path.write_text(json.dumps(request_payload, indent=2, sort_keys=True), encoding="utf-8")
+        if response_path.exists():
+            response_path.unlink()
+
+        command = [
+            sys.executable,
+            "-m",
+            "profiler_agent.phase2.runtime_eval_worker",
+            "--request",
+            str(request_path),
+            "--response",
+            str(response_path),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_subprocess_timeout_seconds(),
+                cwd=str(root_dir),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return _runtime_failure_evaluation(
+                candidate_id=candidate.candidate_id,
+                notes=[f"runtime_subprocess_timeout:returncode=124", f"runtime_subprocess_stderr:{tail_text((exc.stderr or ''), 500)}"],
+                rtol=rtol,
+                atol=atol,
+            )
+
+        if completed.returncode != 0:
+            return _runtime_failure_evaluation(
+                candidate_id=candidate.candidate_id,
+                notes=[
+                    f"runtime_subprocess_failed:returncode={completed.returncode}",
+                    f"runtime_subprocess_stderr:{tail_text(completed.stderr or '', 500)}",
+                ],
+                rtol=rtol,
+                atol=atol,
+            )
+        if not response_path.exists():
+            return _runtime_failure_evaluation(
+                candidate_id=candidate.candidate_id,
+                notes=["runtime_subprocess_missing_response"],
+                rtol=rtol,
+                atol=atol,
+            )
+        try:
+            payload = json.loads(response_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return _runtime_failure_evaluation(
+                candidate_id=candidate.candidate_id,
+                notes=["runtime_subprocess_invalid_response_json"],
+                rtol=rtol,
+                atol=atol,
+            )
+        if not isinstance(payload, dict):
+            return _runtime_failure_evaluation(
+                candidate_id=candidate.candidate_id,
+                notes=["runtime_subprocess_invalid_response_shape"],
+                rtol=rtol,
+                atol=atol,
+            )
+        return _candidate_evaluation_from_dict(payload)
 
     return runtime_evaluator
 
