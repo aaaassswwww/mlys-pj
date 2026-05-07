@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -207,6 +208,13 @@ class OpenAICompatibleLLMClient:
             debug_record["error_category"] = "network_timeout"
             return
 
+        if isinstance(exc, http.client.IncompleteRead):
+            debug_record["error_category"] = "incomplete_http_read"
+            partial = getattr(exc, "partial", b"")
+            if isinstance(partial, bytes) and partial:
+                debug_record["partial_response_excerpt"] = self._truncate(partial.decode("utf-8", errors="replace"))
+            return
+
         if isinstance(exc, ValueError):
             debug_record["error_category"] = "request_value_error"
             return
@@ -216,6 +224,8 @@ class OpenAICompatibleLLMClient:
     @staticmethod
     def _is_retryable_error(exc: Exception, category: str | None) -> bool:
         if isinstance(exc, TimeoutError):
+            return True
+        if isinstance(exc, http.client.IncompleteRead):
             return True
         if isinstance(exc, urllib.error.URLError):
             return True
@@ -281,7 +291,7 @@ class OpenAICompatibleLLMClient:
                     debug_record["raw_response"] = raw
                     debug_record["elapsed_ms"] = int((time.perf_counter() - start_ts) * 1000)
                 break
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, http.client.IncompleteRead) as exc:
                 debug_record["phase"] = "http_error"
                 debug_record["elapsed_ms"] = int((time.perf_counter() - start_ts) * 1000)
                 self._annotate_http_error(debug_record, exc)

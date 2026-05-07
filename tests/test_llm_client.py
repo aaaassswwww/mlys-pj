@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import io
@@ -196,6 +197,37 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(first.get("retryable"), True)
         self.assertEqual(first.get("will_retry"), True)
         self.assertEqual(first.get("error_category"), "network_timeout")
+        self.assertEqual(last.get("phase"), "json_parsed")
+
+    def test_complete_json_retries_on_incomplete_read_then_succeeds(self) -> None:
+        debug_path = self.tmp_dir / "llm_debug_incomplete_read.jsonl"
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"intent":"gpu_profiling"}',
+                    }
+                }
+            ]
+        }
+        raw = json.dumps(payload, ensure_ascii=False)
+        attempts = [
+            http.client.IncompleteRead(b""),
+            _DummyResponse(raw),
+        ]
+        with patch.dict(os.environ, {"PROFILER_AGENT_LLM_DEBUG_PATH": str(debug_path)}):
+            with patch("urllib.request.urlopen", side_effect=attempts):
+                with patch("time.sleep", return_value=None):
+                    parsed = self.client.complete_json(system_prompt="sys", user_prompt="usr")
+        self.assertEqual(parsed, {"intent": "gpu_profiling"})
+        lines = debug_path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertGreaterEqual(len(lines), 2)
+        first = json.loads(lines[0])
+        last = json.loads(lines[-1])
+        self.assertEqual(first.get("phase"), "http_error")
+        self.assertEqual(first.get("retryable"), True)
+        self.assertEqual(first.get("will_retry"), True)
+        self.assertEqual(first.get("error_category"), "incomplete_http_read")
         self.assertEqual(last.get("phase"), "json_parsed")
 
 
