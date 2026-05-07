@@ -56,10 +56,19 @@ def write_best_candidate(
     root_dir.mkdir(parents=True, exist_ok=True)
     path = root_dir / "optimized_lora.cu"
     path.write_text(source_code, encoding="utf-8")
+    write_phase2_state(root_dir, state=state)
+    return path
+
+
+def write_phase2_state(
+    root_dir: Path,
+    *,
+    state: Phase2OptimizerState,
+) -> Path:
     state_path = root_dir / ".agent_artifacts" / "phase2_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
-    return path
+    return state_path
 
 
 def write_phase2_report(
@@ -76,7 +85,24 @@ def write_phase2_report(
         "iterations_run": state.iteration,
         "candidate_history_count": len(state.candidate_history),
         "correctness_failures_count": len(state.correctness_failures),
+        "compile_errors_count": len(state.compile_errors),
         "optimized_lora_path": str(best_candidate_path) if best_candidate_path is not None else "",
+        "recent_candidates": [
+            {
+                "candidate_id": entry.get("candidate_id"),
+                "correctness_passed": (
+                    ((entry.get("evaluation") or {}).get("correctness") or {}).get("passed")
+                    if isinstance(entry, dict)
+                    else None
+                ),
+                "speedup": ((entry.get("evaluation") or {}).get("speedup") if isinstance(entry, dict) else None),
+                "notes": ((entry.get("evaluation") or {}).get("notes") if isinstance(entry, dict) else None),
+            }
+            for entry in state.candidate_history[-3:]
+            if isinstance(entry, dict)
+        ],
+        "recent_compile_errors": state.compile_errors[-3:],
+        "recent_correctness_failures": state.correctness_failures[-3:],
     }
     report_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return report_path

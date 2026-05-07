@@ -9,6 +9,7 @@ from profiler_agent.phase2.candidate_store import (
     record_candidate_evaluation,
     write_best_candidate,
     write_phase2_report,
+    write_phase2_state,
 )
 from profiler_agent.phase2.models import CandidateEvaluation, GeneratedCandidate, Phase2OptimizerState
 
@@ -91,6 +92,8 @@ def run_phase2_optimization(
             }
         )
 
+    state.done = True
+    write_phase2_state(root_dir, state=state)
     write_phase2_report(root_dir, state=state, best_candidate_path=best_path)
 
     return Phase2OptimizationResult(

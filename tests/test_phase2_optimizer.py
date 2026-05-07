@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import unittest
 from pathlib import Path
@@ -103,6 +104,15 @@ class Phase2OptimizerTests(unittest.TestCase):
             self.assertEqual(len(result.state.correctness_failures), 1)
             self.assertTrue((root / "optimized_lora.cu").exists())
             self.assertTrue((root / ".agent_artifacts" / "phase2_report.json").exists())
+            state_json = json.loads((root / ".agent_artifacts" / "phase2_state.json").read_text(encoding="utf-8"))
+            report_json = json.loads((root / ".agent_artifacts" / "phase2_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(state_json["iteration"], 1)
+            self.assertEqual(len(state_json["candidate_history"]), 1)
+            self.assertEqual(len(state_json["correctness_failures"]), 1)
+            self.assertTrue(state_json["done"])
+            self.assertEqual(report_json["correctness_failures_count"], 1)
+            self.assertEqual(report_json["candidate_history_count"], 1)
+            self.assertEqual(len(report_json["recent_candidates"]), 1)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

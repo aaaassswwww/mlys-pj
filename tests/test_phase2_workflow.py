@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import unittest
@@ -62,6 +63,12 @@ class Phase2WorkflowTests(unittest.TestCase):
             self.assertIsNotNone(result.best_candidate_id)
             self.assertEqual(result.iterations_run, 2)
             self.assertGreaterEqual(len(result.state.candidate_history), 2)
+            state_json = json.loads((root / ".agent_artifacts" / "phase2_state.json").read_text(encoding="utf-8"))
+            report_json = json.loads((root / ".agent_artifacts" / "phase2_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(state_json["iteration"], 2)
+            self.assertTrue(state_json["done"])
+            self.assertGreaterEqual(report_json["candidate_history_count"], 2)
+            self.assertIn("recent_candidates", report_json)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
