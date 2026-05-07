@@ -53,10 +53,22 @@ class Phase2EvaluatorTests(unittest.TestCase):
         source = Path("candidate") / "optimized_lora.cu"
         library = Path("candidate") / "optimized_lora.dll"
         with patch("profiler_agent.phase2.evaluator.resolve_command_path", return_value="C:/CUDA/bin/nvcc.exe"):
-            command = build_nvcc_shared_library_command(source, library)
+            with patch("profiler_agent.phase2.evaluator.os.name", "nt"):
+                command = build_nvcc_shared_library_command(source, library)
         self.assertEqual(command[0], "C:/CUDA/bin/nvcc.exe")
         self.assertIn("-shared", command)
         self.assertEqual(command[-1], str(library))
+        self.assertIn("/wd4819", command)
+
+    def test_build_nvcc_shared_library_command_adds_fpic_on_posix(self) -> None:
+        source = Path("candidate") / "optimized_lora.cu"
+        library = Path("candidate") / "optimized_lora.so"
+        with patch("profiler_agent.phase2.evaluator.resolve_command_path", return_value="/usr/local/cuda/bin/nvcc"):
+            with patch("profiler_agent.phase2.evaluator.os.name", "posix"):
+                command = build_nvcc_shared_library_command(source, library)
+        self.assertEqual(command[0], "/usr/local/cuda/bin/nvcc")
+        self.assertIn("-shared", command)
+        self.assertIn("-fPIC", command)
 
     def test_compile_checked_evaluator_returns_compile_failure_when_nvcc_missing(self) -> None:
         root = Path("tests/.tmp") / f"phase2_eval_{uuid4().hex}"

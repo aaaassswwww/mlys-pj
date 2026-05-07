@@ -169,6 +169,8 @@ def build_nvcc_shared_library_command(source_path: Path, library_path: Path) -> 
     ]
     if os.name == "nt":
         argv[4:4] = ["-Xcompiler", "/wd4819"]
+    else:
+        argv[4:4] = ["-Xcompiler", "-fPIC"]
     return argv
 
 
