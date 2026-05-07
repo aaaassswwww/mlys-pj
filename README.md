@@ -138,6 +138,26 @@ Optional (container-like environment only): execute `run.sh` and validate single
 python scripts/pre_submit_check.py --workspace /workspace --run-container-check
 ```
 
+## Server Self-Check
+
+Before running the Phase 2 time-budget loop on a server, run this environment self-check:
+
+```powershell
+python scripts/server_self_check.py --workspace .
+```
+
+What this checks:
+- required tools such as `python` and `nvidia-smi`
+- optional tools such as `nvcc`, `ncu`, and `nsys`
+- the Phase 2 runtime subprocess bootstrap path used by the evaluator
+- whether the current interpreter can import `profiler_agent.phase2.runtime_eval_worker`
+
+If you only want the Phase 2 subprocess/import check without the unit test suite:
+
+```powershell
+python scripts/server_self_check.py --workspace . --skip-unittest
+```
+
 ## Extending
 
 1. Add a strategy under `profiler_agent/target_strategies/`.

@@ -6,7 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
-from scripts.server_self_check import _collect_tool_checks, _tool_check_result, main
+from scripts.server_self_check import (
+    _collect_tool_checks,
+    _phase2_runtime_worker_import_check,
+    _tool_check_result,
+    main,
+)
 
 
 class ServerSelfCheckTests(unittest.TestCase):
@@ -40,6 +45,38 @@ class ServerSelfCheckTests(unittest.TestCase):
             self.assertEqual(rc, 0)
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
+
+    @patch("scripts.server_self_check.subprocess.run")
+    def test_phase2_runtime_worker_import_check_reports_success(self, mock_run: unittest.mock.Mock) -> None:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.stderr = ""
+        result = _phase2_runtime_worker_import_check(Path(".").resolve())
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["returncode"], 0)
+        self.assertTrue(result["worker_exists"])
+        self.assertIn("--probe-import-only", result["command"])
+
+    @patch("scripts.server_self_check.resolve_command_path")
+    @patch("scripts.server_self_check.subprocess.run")
+    def test_main_fails_when_phase2_runtime_check_fails(
+        self,
+        mock_run: unittest.mock.Mock,
+        mock_resolve: unittest.mock.Mock,
+    ) -> None:
+        mock_resolve.return_value = "/usr/bin/fake"
+
+        def side_effect(*args, **kwargs):
+            _ = args, kwargs
+            completed = unittest.mock.Mock()
+            completed.returncode = 1
+            completed.stdout = ""
+            completed.stderr = "ModuleNotFoundError: No module named 'profiler_agent.phase2.runtime_eval_worker'"
+            return completed
+
+        mock_run.side_effect = side_effect
+        rc = main(["--workspace", str(Path(".").resolve()), "--skip-unittest"])
+        self.assertEqual(rc, 1)
 
 
 if __name__ == "__main__":
