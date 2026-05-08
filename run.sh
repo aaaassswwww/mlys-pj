@@ -38,6 +38,47 @@ fi
 rm -rf "${ARTIFACT_DIR}"
 mkdir -p "${ARTIFACT_DIR}"
 
+echo "[run.sh] ---- begin torch/cuda precision probe ----"
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+payload = {}
+try:
+    import torch  # type: ignore
+
+    cuda_available = bool(torch.cuda.is_available())
+    payload = {
+        "torch_version": getattr(torch, "__version__", "unknown"),
+        "torch_cuda_version": getattr(torch.version, "cuda", None),
+        "cuda_available": cuda_available,
+        "device_count": int(torch.cuda.device_count()) if cuda_available else 0,
+        "device_name": torch.cuda.get_device_name(0) if cuda_available else None,
+        "matmul_allow_tf32": (
+            getattr(torch.backends.cuda.matmul, "allow_tf32", None)
+            if cuda_available and hasattr(torch.backends, "cuda")
+            else None
+        ),
+        "cudnn_allow_tf32": (
+            getattr(torch.backends.cudnn, "allow_tf32", None)
+            if cuda_available and hasattr(torch.backends, "cudnn")
+            else None
+        ),
+        "float32_matmul_precision": getattr(torch, "get_float32_matmul_precision", lambda: "unsupported")(),
+    }
+except Exception as exc:
+    payload = {
+        "probe_error": f"{type(exc).__name__}: {exc}",
+    }
+
+print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+Path("/workspace/.agent_artifacts/tf32_env.json").write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+    encoding="utf-8",
+)
+PY
+echo "[run.sh] ---- end torch/cuda precision probe ----"
+
 # Phase 2 entrypoint: optimize and keep root-level optimized_lora.cu updated.
 RUN_RC=0
 if [[ "${TIME_BUDGET_ENABLED}" == "1" || "${TIME_BUDGET_ENABLED}" == "true" || "${TIME_BUDGET_ENABLED}" == "yes" || "${TIME_BUDGET_ENABLED}" == "on" ]]; then
