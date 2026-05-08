@@ -427,7 +427,7 @@ class Phase2GeneratorTests(unittest.TestCase):
         )
         self.assertIn('"focus_hidden_dim": 3584', prompt)
         self.assertIn('"balance_priority": "high"', prompt)
-        self.assertIn("if one hidden_dim is clearly worse than the others, prioritize fixing that worst hidden_dim", prompt)
+        self.assertIn("if one hidden_dim is clearly worse than the others, use it as a diagnostic hint, but do not overfit to it", prompt)
         self.assertIn("prefer balanced improvements across 3584, 4096, and 4608", prompt)
         self.assertIn("treat regressions on already-strong hidden_dims as important failures", prompt)
 

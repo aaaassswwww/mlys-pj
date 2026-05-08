@@ -291,7 +291,7 @@ def build_lora_generation_user_prompt(
                 "treat the preferred revision source candidate as the starting point and revise it instead of discarding it",
                 "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
                 "make the smallest set of changes that can plausibly improve correctness toward the reference",
-                "if one hidden_dim is clearly worse than the others, prioritize fixing that worst hidden_dim without regressing the better ones",
+                "if one hidden_dim is clearly worse than the others, use it as a diagnostic hint, but do not overfit to it at the expense of the other tested hidden_dims",
                 "prefer balanced improvements across 3584, 4096, and 4608 over extreme overfitting to any single hidden_dim",
                 "treat regressions on already-strong hidden_dims as important failures even if one hidden_dim improves sharply",
                 "avoid resetting all stages back to the already-explored naive float32 baseline when reference-like mixed-stage variants are available",
