@@ -76,6 +76,7 @@ def _runtime_failure_evaluation(
         reference_benchmark=empty_benchmark_result(),
         speedup=0.0,
         notes=notes,
+        per_spec=[],
     )
 
 
@@ -154,6 +155,11 @@ def _candidate_evaluation_from_dict(payload: dict[str, Any]) -> CandidateEvaluat
         ),
         speedup=float(payload.get("speedup", 0.0)),
         notes=[str(x) for x in payload.get("notes", [])],
+        per_spec=[
+            dict(item)
+            for item in payload.get("per_spec", [])
+            if isinstance(item, dict)
+        ],
         compilation=(
             CompilationResult(
                 ok=bool(compilation_data.get("ok", False)),
@@ -478,6 +484,7 @@ def build_harness_runtime_evaluator(
         runtime_backend = backend or resolve_backend()
         ref_runner = reference_runner or lora_reference_forward
         correctness_results: list[CorrectnessResult] = []
+        per_spec_results: list[dict[str, Any]] = []
         student_benchmarks: list[BenchmarkResult] = []
         reference_benchmarks: list[BenchmarkResult] = []
         notes: list[str] = []
@@ -531,8 +538,16 @@ def build_harness_runtime_evaluator(
                     atol=atol,
                 )
             correctness_results.append(correctness)
+            spec_result: dict[str, Any] = {
+                "hidden_dim": spec.hidden_dim,
+                "num_tokens": spec.num_tokens,
+                "passed": correctness.passed,
+                "max_abs_err": float(correctness.max_abs_err),
+                "rel_l2_err": float(correctness.rel_l2_err),
+            }
             if not correctness.passed:
                 notes.append(f"correctness_failed:hidden_dim={spec.hidden_dim}")
+                diagnosis = None
                 _append_reference_diagnosis_notes(
                     notes,
                     spec=spec,
@@ -540,7 +555,19 @@ def build_harness_runtime_evaluator(
                     reference_output=reference_output,
                     inputs=inputs,
                 )
+                try:
+                    diagnosis = build_reference_diagnosis(
+                        student_output,
+                        reference_output,
+                        inputs,
+                    )
+                except Exception:
+                    diagnosis = None
+                if isinstance(diagnosis, dict):
+                    spec_result["reference_diagnosis"] = diagnosis
+                per_spec_results.append(spec_result)
                 continue
+            per_spec_results.append(spec_result)
 
             try:
                 reference_benchmarks.append(
@@ -598,6 +625,7 @@ def build_harness_runtime_evaluator(
             reference_benchmark=reference_summary,
             speedup=speedup,
             notes=notes,
+            per_spec=per_spec_results,
         )
 
     return runtime_evaluator
@@ -734,6 +762,7 @@ def build_compile_checked_candidate_evaluator(
                 reference_benchmark=empty_benchmark_result(),
                 speedup=0.0,
                 notes=["compile_failed"],
+                per_spec=[],
                 compilation=compilation,
                 load=LoadResult(
                     ok=False,
@@ -758,6 +787,7 @@ def build_compile_checked_candidate_evaluator(
                 reference_benchmark=empty_benchmark_result(),
                 speedup=0.0,
                 notes=["load_failed"],
+                per_spec=[],
                 compilation=compilation,
                 load=load_result,
             )
@@ -776,6 +806,7 @@ def build_compile_checked_candidate_evaluator(
                 reference_benchmark=empty_benchmark_result(),
                 speedup=0.0,
                 notes=["runtime_evaluator_not_connected_yet"],
+                per_spec=[],
                 compilation=compilation,
                 load=load_result,
             )
@@ -788,6 +819,7 @@ def build_compile_checked_candidate_evaluator(
             reference_benchmark=evaluation.reference_benchmark,
             speedup=evaluation.speedup,
             notes=list(evaluation.notes),
+            per_spec=list(evaluation.per_spec),
             compilation=compilation,
             load=load_result,
         )

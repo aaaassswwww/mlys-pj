@@ -31,6 +31,58 @@ def _extract_previous_correctness_passed(feedback: dict[str, Any] | None) -> boo
 def _extract_reference_diagnosis_summary(feedback: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(feedback, dict):
         return None
+    per_spec = feedback.get("per_spec")
+    if isinstance(per_spec, list):
+        parsed_notes: list[dict[str, Any]] = []
+        closer_counts = {"naive": 0, "reference": 0}
+        best_note = None
+        best_reference_gap = None
+        for item in per_spec:
+            if not isinstance(item, dict):
+                continue
+            diagnosis = item.get("reference_diagnosis")
+            if not isinstance(diagnosis, dict):
+                continue
+            hidden_dim = item.get("hidden_dim")
+            try:
+                payload = {
+                    "hidden_dim": int(hidden_dim),
+                    "student_vs_reference_rel_l2": float(diagnosis["student_vs_reference_rel_l2_err"]),
+                    "student_vs_naive_rel_l2": float(diagnosis["student_vs_naive_rel_l2_err"]),
+                    "naive_vs_reference_rel_l2": float(diagnosis["naive_vs_reference_rel_l2_err"]),
+                    "student_closer_to": str(diagnosis["student_closer_to"]),
+                    "full_rel_l2_err": float(item.get("rel_l2_err", float("inf"))),
+                    "full_max_abs_err": float(item.get("max_abs_err", float("inf"))),
+                }
+            except (KeyError, TypeError, ValueError):
+                continue
+            parsed_notes.append(payload)
+            closer_to = payload["student_closer_to"]
+            if closer_to in closer_counts:
+                closer_counts[closer_to] += 1
+            ref_gap = payload["student_vs_reference_rel_l2"]
+            if best_reference_gap is None or ref_gap < best_reference_gap:
+                best_reference_gap = ref_gap
+                best_note = payload
+        if parsed_notes:
+            dominant = "mixed"
+            if closer_counts["naive"] and not closer_counts["reference"]:
+                dominant = "naive"
+            elif closer_counts["reference"] and not closer_counts["naive"]:
+                dominant = "reference"
+            worst_note = max(parsed_notes, key=lambda item: float(item["student_vs_reference_rel_l2"]))
+            spread = max(float(item["student_vs_reference_rel_l2"]) for item in parsed_notes) - min(
+                float(item["student_vs_reference_rel_l2"]) for item in parsed_notes
+            )
+            return {
+                "dominant_student_closer_to": dominant,
+                "closer_to_counts": closer_counts,
+                "best_reference_gap_case": best_note,
+                "worst_reference_gap_case": worst_note,
+                "reference_gap_spread": spread,
+                "cases": parsed_notes,
+                "source": "structured_per_spec",
+            }
     notes = feedback.get("notes")
     if not isinstance(notes, list):
         return None
@@ -83,6 +135,63 @@ def _extract_reference_diagnosis_summary(feedback: dict[str, Any] | None) -> dic
         "best_reference_gap_case": best_note,
         "worst_reference_gap_case": worst_note,
         "reference_gap_spread": spread,
+        "cases": parsed_notes,
+        "source": "notes",
+    }
+
+
+def _extract_per_spec_summary(feedback: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(feedback, dict):
+        return []
+    items = feedback.get("per_spec")
+    if not isinstance(items, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            summary = {
+                "hidden_dim": int(item.get("hidden_dim")),
+                "num_tokens": int(item.get("num_tokens", 0)),
+                "passed": bool(item.get("passed", False)),
+                "rel_l2_err": float(item.get("rel_l2_err", float("inf"))),
+                "max_abs_err": float(item.get("max_abs_err", float("inf"))),
+            }
+        except (TypeError, ValueError):
+            continue
+        diagnosis = item.get("reference_diagnosis")
+        if isinstance(diagnosis, dict):
+            try:
+                summary["reference_diagnosis"] = {
+                    "student_vs_reference_rel_l2_err": float(diagnosis["student_vs_reference_rel_l2_err"]),
+                    "student_vs_naive_rel_l2_err": float(diagnosis["student_vs_naive_rel_l2_err"]),
+                    "naive_vs_reference_rel_l2_err": float(diagnosis["naive_vs_reference_rel_l2_err"]),
+                    "student_closer_to": str(diagnosis["student_closer_to"]),
+                }
+            except (KeyError, TypeError, ValueError):
+                pass
+        normalized.append(summary)
+    return normalized
+
+
+def _extract_previous_candidate(feedback: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(feedback, dict):
+        return {}
+    candidate = feedback.get("previous_candidate")
+    if not isinstance(candidate, dict):
+        return {}
+    source_code = candidate.get("source_code")
+    candidate_id = candidate.get("candidate_id")
+    if not isinstance(source_code, str) or not source_code.strip():
+        return {}
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        return {}
+    return {
+        "candidate_id": candidate_id,
+        "rationale": str(candidate.get("rationale", "")),
+        "source": str(candidate.get("source", "")),
+        "source_code": source_code,
     }
 
 
@@ -151,6 +260,8 @@ def build_lora_generation_user_prompt(
 ) -> str:
     previous_correctness_passed = _extract_previous_correctness_passed(feedback)
     previous_rel_l2_err = _extract_previous_rel_l2_err(feedback)
+    previous_candidate = _extract_previous_candidate(feedback)
+    per_spec_feedback = _extract_per_spec_summary(feedback)
     reference_diagnosis = _extract_reference_diagnosis_summary(feedback)
     torch_precision = _extract_torch_precision_summary(feedback)
     optimization_priority = "balanced"
@@ -193,6 +304,9 @@ def build_lora_generation_user_prompt(
     revision_source_preference = "base_candidate"
     if candidate_strategy == "fit_torch_tf32_reference" and reference_like_candidate:
         revision_source_preference = "reference_like_candidate"
+    previous_compile_ok = bool(feedback.get("compile_ok")) if isinstance(feedback, dict) else False
+    if previous_candidate and previous_compile_ok and not previous_correctness_passed:
+        revision_source_preference = "previous_candidate_patch_first"
     strategy_specific_guidance: list[str] = []
     if candidate_strategy == "fit_torch_reference_over_naive":
         strategy_specific_guidance = [
@@ -219,6 +333,7 @@ def build_lora_generation_user_prompt(
             "Avoid cuBLAS or cuBLASLt because the current build/load path is not set up for those dependencies.",
             "If a reference_like_candidate is provided, prefer revising that candidate over the naive-like base_candidate.",
             "Optimize for balanced behavior across all tested hidden dimensions rather than overfitting one dimension to an extremely low diagnostic error.",
+            "The immediately previous candidate is your latest concrete patch attempt; unless it catastrophically regressed or failed compilation, prefer editing that candidate in place instead of starting a fresh family.",
         ]
     elif candidate_strategy == "speedup_preserve_correctness":
         strategy_specific_guidance = [
@@ -251,6 +366,8 @@ def build_lora_generation_user_prompt(
         "balance_priority": balance_priority,
         "reference_diagnosis_summary": reference_diagnosis or {},
         "torch_precision_summary": torch_precision or {},
+        "per_spec_feedback": per_spec_feedback,
+        "previous_candidate": previous_candidate,
         "base_candidate": base_candidate,
         "reference_like_candidate": reference_like_candidate,
         "constraints": {
@@ -290,6 +407,8 @@ def build_lora_generation_user_prompt(
             "forbid_variable_length_shared_arrays": True,
             "when_correctness_is_close_but_failing": [
                 "prefer correctness over speed",
+                "treat the structured per_spec feedback as the main source of truth for which hidden dimensions regressed or improved",
+                "revise the immediately previous candidate in place when it compiled and produced meaningful metrics; do not reset to a new baseline family unless the previous attempt catastrophically failed",
                 "treat the preferred revision source candidate as the starting point and revise it instead of discarding it",
                 "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
                 "make the smallest set of changes that can plausibly improve correctness toward the reference",

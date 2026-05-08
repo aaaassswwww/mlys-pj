@@ -85,6 +85,7 @@ class CandidateEvaluation:
     reference_benchmark: BenchmarkResult
     speedup: float
     notes: list[str] = field(default_factory=list)
+    per_spec: list[dict[str, Any]] = field(default_factory=list)
     compilation: CompilationResult | None = None
     load: LoadResult | None = None
 

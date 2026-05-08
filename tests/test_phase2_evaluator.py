@@ -183,6 +183,9 @@ class Phase2EvaluatorTests(unittest.TestCase):
         self.assertIn("correctness_not_yet_passing", evaluation.notes)
         self.assertTrue(any(note.startswith("torch_precision_env:") for note in evaluation.notes))
         self.assertTrue(any(note.startswith("reference_diagnosis:hidden_dim=8:") for note in evaluation.notes))
+        self.assertEqual(len(evaluation.per_spec), 1)
+        self.assertEqual(evaluation.per_spec[0]["hidden_dim"], 8)
+        self.assertIn("reference_diagnosis", evaluation.per_spec[0])
 
     def test_harness_runtime_evaluator_reports_candidate_runner_error(self) -> None:
         specs = [LoraProblemSpec(hidden_dim=8, output_dim=4, num_tokens=3, device="cpu")]

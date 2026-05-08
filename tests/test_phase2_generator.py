@@ -480,6 +480,73 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"candidate_strategy": "fit_torch_tf32_reference"', prompt)
         self.assertIn("Optimize for balanced behavior across all tested hidden dimensions", prompt)
 
+    def test_user_prompt_prefers_structured_per_spec_feedback_and_previous_candidate(self) -> None:
+        prompt = build_lora_generation_user_prompt(
+            state=Phase2OptimizerState(
+                current_best_candidate_id="best-overall",
+                current_best_source_code="best overall source",
+                current_best_rationale="best overall rationale",
+                current_best_source="llm_generated",
+                current_best_reference_candidate_id="best-reference",
+                current_best_reference_source_code="best reference source",
+                current_best_reference_rationale="best reference rationale",
+                current_best_reference_source="llm_generated",
+            ),
+            iteration=19,
+            best_speedup=0.0,
+            feedback={
+                "compile_ok": True,
+                "correctness": {
+                    "passed": False,
+                    "rel_l2_err": 3.0e-4,
+                    "max_abs_err": 0.55,
+                },
+                "per_spec": [
+                    {
+                        "hidden_dim": 3584,
+                        "num_tokens": 32,
+                        "passed": False,
+                        "rel_l2_err": 3.2e-4,
+                        "max_abs_err": 0.6,
+                        "reference_diagnosis": {
+                            "student_vs_reference_rel_l2_err": 3.2e-4,
+                            "student_vs_naive_rel_l2_err": 3.3e-4,
+                            "naive_vs_reference_rel_l2_err": 7.0e-5,
+                            "student_closer_to": "reference",
+                        },
+                    },
+                    {
+                        "hidden_dim": 4096,
+                        "num_tokens": 32,
+                        "passed": False,
+                        "rel_l2_err": 2.0e-4,
+                        "max_abs_err": 0.4,
+                        "reference_diagnosis": {
+                            "student_vs_reference_rel_l2_err": 2.0e-4,
+                            "student_vs_naive_rel_l2_err": 3.8e-4,
+                            "naive_vs_reference_rel_l2_err": 4.0e-4,
+                            "student_closer_to": "reference",
+                        },
+                    },
+                ],
+                "notes": [
+                    "torch_precision_env:torch_available=True:cuda_available=True:matmul_allow_tf32=True:cudnn_allow_tf32=True:float32_matmul_precision=high",
+                ],
+                "previous_candidate": {
+                    "candidate_id": "prev-cand",
+                    "rationale": "latest patch",
+                    "source": "llm_generated",
+                    "source_code": "prev source",
+                },
+            },
+        )
+        self.assertIn('"revision_source_preference": "previous_candidate_patch_first"', prompt)
+        self.assertIn('"previous_candidate": {', prompt)
+        self.assertIn('"candidate_id": "prev-cand"', prompt)
+        self.assertIn('"per_spec_feedback": [', prompt)
+        self.assertIn("treat the structured per_spec feedback as the main source of truth", prompt)
+        self.assertIn("revise the immediately previous candidate in place", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

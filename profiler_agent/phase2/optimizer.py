@@ -114,6 +114,30 @@ def run_phase2_optimization(
             state.iteration = iteration
             persist()
 
+            generation_context = {
+                "previous_feedback_candidate_id": (
+                    (
+                        ((last_feedback or {}).get("previous_candidate") or {}).get("candidate_id")
+                        if isinstance(last_feedback, dict)
+                        else None
+                    )
+                ),
+                "base_candidate_id": state.current_best_candidate_id,
+                "reference_like_candidate_id": state.current_best_reference_candidate_id,
+                "revision_source_preference": (
+                    "previous_candidate_patch_first"
+                    if isinstance(last_feedback, dict)
+                    and isinstance(last_feedback.get("previous_candidate"), dict)
+                    and bool(last_feedback.get("compile_ok"))
+                    and not bool(((last_feedback.get("correctness") or {}).get("passed")))
+                    else (
+                        "reference_like_candidate"
+                        if state.current_best_reference_candidate_id is not None
+                        and state.current_best_candidate_id != state.current_best_reference_candidate_id
+                        else "base_candidate"
+                    )
+                ),
+            }
             candidate = candidate_generator(state, last_feedback)
             evaluation = candidate_evaluator(candidate)
 
@@ -140,6 +164,7 @@ def run_phase2_optimization(
             last_feedback = build_candidate_feedback(
                 compile_ok=bool(evaluation.compilation.ok) if evaluation.compilation is not None else True,
                 correctness=evaluation.correctness.to_dict(),
+                per_spec=list(evaluation.per_spec),
                 benchmark={
                     "student_median_runtime_ms": evaluation.student_benchmark.median_runtime_ms,
                     "reference_median_runtime_ms": evaluation.reference_benchmark.median_runtime_ms,
@@ -150,6 +175,12 @@ def run_phase2_optimization(
                     "load": evaluation.load.to_dict() if evaluation.load is not None else {},
                 },
                 notes=list(evaluation.notes),
+                previous_candidate={
+                    "candidate_id": candidate.candidate_id,
+                    "rationale": candidate.rationale,
+                    "source": candidate.source,
+                    "source_code": candidate.source_code,
+                },
             )
             state.llm_revision_history.append(
                 {
@@ -158,6 +189,7 @@ def run_phase2_optimization(
                     "rationale": candidate.rationale,
                     "feedback": last_feedback,
                     "source": candidate.source,
+                    "generation_context": generation_context,
                 }
             )
             persist()

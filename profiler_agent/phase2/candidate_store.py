@@ -145,6 +145,7 @@ def write_phase2_report(
     report_path = root_dir / ".agent_artifacts" / "phase2_report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     budget = get_runtime_budget_status()
+    revision_linkage = _build_revision_linkage_summary(state)
     payload = {
         "current_best_candidate_id": state.current_best_candidate_id,
         "current_best_correct_candidate_id": state.current_best_correct_candidate_id,
@@ -160,6 +161,7 @@ def write_phase2_report(
         "compile_errors_count": len(state.compile_errors),
         "optimized_lora_path": str(best_candidate_path) if best_candidate_path is not None else "",
         "runtime_budget": budget,
+        "revision_linkage_summary": revision_linkage,
         "recent_candidates": [
             {
                 "candidate_id": entry.get("candidate_id"),
@@ -181,18 +183,55 @@ def write_phase2_report(
     return report_path
 
 
+def _build_revision_linkage_summary(state: Phase2OptimizerState) -> dict[str, Any]:
+    history = [item for item in state.llm_revision_history if isinstance(item, dict)]
+    recent = history[-5:]
+    chain: list[dict[str, Any]] = []
+    for item in recent:
+        feedback = item.get("feedback") if isinstance(item.get("feedback"), dict) else {}
+        generation_context = (
+            item.get("generation_context") if isinstance(item.get("generation_context"), dict) else {}
+        )
+        previous_candidate = (
+            feedback.get("previous_candidate")
+            if isinstance(feedback, dict) and isinstance(feedback.get("previous_candidate"), dict)
+            else {}
+        )
+        chain.append(
+            {
+                "iteration": item.get("iteration"),
+                "candidate_id": item.get("candidate_id"),
+                "generated_after_candidate_id": generation_context.get("previous_feedback_candidate_id"),
+                "base_candidate_id_at_generation": generation_context.get("base_candidate_id"),
+                "reference_like_candidate_id_at_generation": generation_context.get("reference_like_candidate_id"),
+                "selected_revision_preference": generation_context.get("revision_source_preference"),
+                "evaluated_candidate_id_in_feedback": previous_candidate.get("candidate_id"),
+            }
+        )
+    latest = chain[-1] if chain else {}
+    return {
+        "history_length": len(history),
+        "latest_generation_linkage": latest,
+        "recent_revision_chain": chain,
+    }
+
+
 def build_candidate_feedback(
     *,
     compile_ok: bool,
     correctness: dict[str, Any] | None = None,
+    per_spec: list[dict[str, Any]] | None = None,
     benchmark: dict[str, Any] | None = None,
     profile: dict[str, Any] | None = None,
     notes: list[str] | None = None,
+    previous_candidate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "compile_ok": bool(compile_ok),
         "correctness": correctness or {},
+        "per_spec": [dict(item) for item in (per_spec or []) if isinstance(item, dict)],
         "benchmark": benchmark or {},
         "profile": profile or {},
         "notes": [str(item) for item in (notes or [])],
+        "previous_candidate": dict(previous_candidate or {}),
     }

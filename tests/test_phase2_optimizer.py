@@ -114,12 +114,21 @@ class Phase2OptimizerTests(unittest.TestCase):
             self.assertEqual(report_json["correctness_failures_count"], 1)
             self.assertEqual(report_json["candidate_history_count"], 1)
             self.assertEqual(len(report_json["recent_candidates"]), 1)
+            self.assertIn("revision_linkage_summary", report_json)
+            self.assertEqual(
+                report_json["revision_linkage_summary"]["latest_generation_linkage"]["selected_revision_preference"],
+                "base_candidate",
+            )
             promoted_source = (root / "optimized_lora.cu").read_text(encoding="utf-8")
             self.assertEqual(promoted_source, "// bad")
             self.assertEqual(state_json["current_best_candidate_id"], "bad")
             self.assertIsNone(state_json["current_best_correct_candidate_id"])
             feedback = state_json["llm_revision_history"][-1]["feedback"]
             self.assertIn("notes", feedback)
+            self.assertIn("per_spec", feedback)
+            self.assertIn("previous_candidate", feedback)
+            self.assertEqual(feedback["previous_candidate"]["candidate_id"], "bad")
+            self.assertIn("generation_context", state_json["llm_revision_history"][-1])
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -213,6 +222,51 @@ class Phase2OptimizerTests(unittest.TestCase):
             self.assertEqual(result.iterations_run, 2)
             self.assertEqual(result.state.stop_reason, "remaining_runtime_below_stop_buffer:10.000s<=30.000s")
             self.assertEqual(generated_ids, ["cand-1", "cand-2"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_optimizer_report_shows_previous_candidate_patch_linkage(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_opt_linkage_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            generated = [
+                GeneratedCandidate(candidate_id="cand-a", source_code="// a", rationale="first"),
+                GeneratedCandidate(candidate_id="cand-b", source_code="// b", rationale="second"),
+            ]
+
+            def generator(state: Phase2OptimizerState, feedback):
+                _ = feedback
+                return generated[state.iteration - 1]
+
+            def evaluator(candidate: GeneratedCandidate) -> CandidateEvaluation:
+                correctness = CorrectnessResult(passed=False, max_abs_err=0.5, rel_l2_err=0.3, rtol=1e-4, atol=1e-4)
+                bench = BenchmarkResult(
+                    warmup_runs=0,
+                    measured_runs=0,
+                    median_runtime_ms=0.0,
+                    min_runtime_ms=0.0,
+                    max_runtime_ms=0.0,
+                    all_runtime_ms=[],
+                )
+                return CandidateEvaluation(
+                    candidate_id=candidate.candidate_id,
+                    correctness=correctness,
+                    student_benchmark=bench,
+                    reference_benchmark=bench,
+                    speedup=0.0,
+                )
+
+            run_phase2_optimization(
+                root_dir=root,
+                max_iterations=2,
+                candidate_generator=generator,
+                candidate_evaluator=evaluator,
+            )
+            report_json = json.loads((root / ".agent_artifacts" / "phase2_report.json").read_text(encoding="utf-8"))
+            latest = report_json["revision_linkage_summary"]["latest_generation_linkage"]
+            self.assertEqual(latest["candidate_id"], "cand-b")
+            self.assertEqual(latest["generated_after_candidate_id"], "cand-a")
+            self.assertEqual(latest["selected_revision_preference"], "previous_candidate_patch_first")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
