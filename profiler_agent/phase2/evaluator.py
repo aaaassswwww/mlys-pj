@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from profiler_agent.phase2.harness import (
     benchmark_callable,
+    build_reference_diagnosis,
     check_correctness,
     compute_speedup,
     empty_benchmark_result,
@@ -200,6 +201,33 @@ def _aggregate_benchmarks(items: list[BenchmarkResult]) -> BenchmarkResult:
         min_runtime_ms=float(all_samples[0]),
         max_runtime_ms=float(all_samples[-1]),
         all_runtime_ms=all_samples,
+    )
+
+
+def _append_reference_diagnosis_notes(
+    notes: list[str],
+    *,
+    spec: LoraProblemSpec,
+    student_output: Any,
+    reference_output: Any,
+    inputs: dict[str, Any],
+) -> None:
+    try:
+        diagnosis = build_reference_diagnosis(
+            student_output,
+            reference_output,
+            inputs,
+        )
+    except Exception as exc:
+        notes.append(f"reference_diagnosis_failed:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+        return
+    notes.append(
+        "reference_diagnosis:"
+        f"hidden_dim={spec.hidden_dim}:"
+        f"student_vs_reference_rel_l2={float(diagnosis['student_vs_reference_rel_l2_err']):.6e}:"
+        f"student_vs_naive_rel_l2={float(diagnosis['student_vs_naive_rel_l2_err']):.6e}:"
+        f"naive_vs_reference_rel_l2={float(diagnosis['naive_vs_reference_rel_l2_err']):.6e}:"
+        f"student_closer_to={diagnosis['student_closer_to']}"
     )
 
 
@@ -487,6 +515,13 @@ def build_harness_runtime_evaluator(
             correctness_results.append(correctness)
             if not correctness.passed:
                 notes.append(f"correctness_failed:hidden_dim={spec.hidden_dim}")
+                _append_reference_diagnosis_notes(
+                    notes,
+                    spec=spec,
+                    student_output=student_output,
+                    reference_output=reference_output,
+                    inputs=inputs,
+                )
                 continue
 
             try:

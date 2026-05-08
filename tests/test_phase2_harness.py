@@ -9,6 +9,7 @@ from profiler_agent.phase2.candidate_store import record_candidate_evaluation, w
 from profiler_agent.phase2.harness import (
     PythonListBackend,
     benchmark_callable,
+    build_reference_diagnosis,
     check_correctness,
     compute_speedup,
     generate_lora_inputs,
@@ -131,6 +132,20 @@ class Phase2HarnessTests(unittest.TestCase):
             self.assertTrue((root / ".agent_artifacts" / "phase2_state.json").exists())
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+    def test_build_reference_diagnosis_reports_relative_gaps(self) -> None:
+        inputs = {
+            "W": [[1.0, 2.0], [3.0, 4.0]],
+            "X": [[1.0, 0.0], [0.0, 1.0]],
+            "A": [[1.0], [2.0]],
+            "B": [[5.0], [6.0]],
+        }
+        reference = lora_reference_forward(inputs, backend=PythonListBackend())
+        student = [[6.1, 8.0], [13.0, 16.0]]
+        diagnosis = build_reference_diagnosis(student, reference, inputs, max_rows=2, max_cols=2)
+        self.assertIn("student_vs_reference_rel_l2_err", diagnosis)
+        self.assertIn("student_vs_naive_rel_l2_err", diagnosis)
+        self.assertIn("naive_vs_reference_rel_l2_err", diagnosis)
 
 
 if __name__ == "__main__":

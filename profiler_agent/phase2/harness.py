@@ -143,6 +143,92 @@ def lora_reference_forward(inputs: dict[str, Any], backend: TensorBackend | None
     return wx + abtx
 
 
+def _to_python_matrix(value, *, max_rows: int | None = None, max_cols: int | None = None):
+    if isinstance(value, list):
+        rows = value if max_rows is None else value[:max_rows]
+        if max_cols is None:
+            return [[float(item) for item in row] for row in rows]
+        return [[float(item) for item in row[:max_cols]] for row in rows]
+    try:
+        sliced = value
+        if max_rows is not None or max_cols is not None:
+            row_slice = slice(None if max_rows is None else max_rows)
+            col_slice = slice(None if max_cols is None else max_cols)
+            sliced = value[row_slice, col_slice]
+        detached = sliced.detach().cpu()
+        return [[float(item) for item in row] for row in detached.tolist()]
+    except Exception:
+        try:
+            materialized = value.tolist()
+        except Exception as exc:
+            raise RuntimeError("unable_to_materialize_tensor_for_reference_diagnosis") from exc
+        rows = materialized if max_rows is None else materialized[:max_rows]
+        if max_cols is None:
+            return [[float(item) for item in row] for row in rows]
+        return [[float(item) for item in row[:max_cols]] for row in rows]
+
+
+def _naive_lora_reference_subset(
+    inputs: dict[str, Any],
+    *,
+    output_rows: int,
+    output_cols: int,
+) -> list[list[float]]:
+    W = _to_python_matrix(inputs["W"], max_rows=output_rows, max_cols=None)
+    X = _to_python_matrix(inputs["X"], max_rows=None, max_cols=output_cols)
+    A = _to_python_matrix(inputs["A"], max_rows=output_rows, max_cols=None)
+    B = _to_python_matrix(inputs["B"], max_rows=None, max_cols=None)
+    d = len(X)
+    rank = len(A[0]) if A else 0
+    temp = [[0.0 for _ in range(output_cols)] for _ in range(rank)]
+    for k in range(rank):
+        for j in range(output_cols):
+            acc = 0.0
+            for i in range(d):
+                acc += float(B[i][k]) * float(X[i][j])
+            temp[k][j] = acc
+    Y = [[0.0 for _ in range(output_cols)] for _ in range(output_rows)]
+    for i in range(output_rows):
+        for j in range(output_cols):
+            acc = 0.0
+            for t in range(d):
+                acc += float(W[i][t]) * float(X[t][j])
+            for k in range(rank):
+                acc += float(A[i][k]) * float(temp[k][j])
+            Y[i][j] = acc
+    return Y
+
+
+def build_reference_diagnosis(
+    student_output,
+    reference_output,
+    inputs: dict[str, Any],
+    *,
+    max_rows: int = 64,
+    max_cols: int = 8,
+) -> dict[str, float | str]:
+    output_rows = min(max_rows, len(inputs["W"]) if isinstance(inputs["W"], list) else int(inputs["W"].shape[0]))
+    output_cols = min(max_cols, len(inputs["X"][0]) if isinstance(inputs["X"], list) else int(inputs["X"].shape[1]))
+    metrics = PythonListBackend()
+    student_subset = _to_python_matrix(student_output, max_rows=output_rows, max_cols=output_cols)
+    reference_subset = _to_python_matrix(reference_output, max_rows=output_rows, max_cols=output_cols)
+    naive_subset = _naive_lora_reference_subset(inputs, output_rows=output_rows, output_cols=output_cols)
+    student_vs_reference_rel = float(metrics.rel_l2_err(student_subset, reference_subset))
+    student_vs_naive_rel = float(metrics.rel_l2_err(student_subset, naive_subset))
+    naive_vs_reference_rel = float(metrics.rel_l2_err(naive_subset, reference_subset))
+    return {
+        "subset_rows": float(output_rows),
+        "subset_cols": float(output_cols),
+        "student_vs_reference_rel_l2_err": student_vs_reference_rel,
+        "student_vs_reference_max_abs_err": float(metrics.max_abs_err(student_subset, reference_subset)),
+        "student_vs_naive_rel_l2_err": student_vs_naive_rel,
+        "student_vs_naive_max_abs_err": float(metrics.max_abs_err(student_subset, naive_subset)),
+        "naive_vs_reference_rel_l2_err": naive_vs_reference_rel,
+        "naive_vs_reference_max_abs_err": float(metrics.max_abs_err(naive_subset, reference_subset)),
+        "student_closer_to": ("naive" if student_vs_naive_rel < student_vs_reference_rel else "reference"),
+    }
+
+
 def check_correctness(
     student_output,
     reference_output,
