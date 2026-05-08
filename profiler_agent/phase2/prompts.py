@@ -36,7 +36,7 @@ def build_lora_generation_system_prompt() -> str:
         "Y[i, j] = sum_t W[i, t] * X[t, j] + sum_k A[i, k] * temp[k, j]. "
         "Assume the low rank is fixed to 16 at compile time; do not introduce a runtime rank parameter. "
         "Avoid variable-length shared-memory arrays and avoid shared-memory declarations whose size depends on runtime variables. "
-        "If previous correctness is close but still failing, prioritize correctness over speed: prefer simpler kernels, deterministic writes, full initialization before any += accumulation, and double-precision accumulators for long reductions."
+        "If previous correctness is close but still failing, prioritize correctness over speed and match the reference float32 behavior as closely as possible: prefer simpler kernels, deterministic writes, full initialization before any += accumulation, and avoid unnecessary changes in accumulation precision or reassociation that can drift away from float32 matmul semantics."
     )
 
 
@@ -51,7 +51,7 @@ def build_lora_generation_user_prompt(
     candidate_strategy = "normal_iteration"
     if previous_rel_l2_err is not None and previous_rel_l2_err <= 1e-3:
         optimization_priority = "correctness_first"
-        candidate_strategy = "simplify_and_stabilize_numeric_accuracy"
+        candidate_strategy = "match_reference_float32_semantics"
     payload = {
         "task": "generate_lora_candidate",
         "iteration": iteration,
@@ -96,8 +96,10 @@ def build_lora_generation_user_prompt(
             "when_correctness_is_close_but_failing": [
                 "prefer correctness over speed",
                 "prefer simpler kernels over aggressive fusion",
-                "use double accumulators for long dot products when needed",
+                "match the reference float32 matmul behavior as closely as possible",
+                "do not assume double accumulation is better if it changes the result away from the float32 reference",
                 "fully initialize outputs before any += accumulation",
+                "avoid unnecessary reassociation of reductions when trying to pass correctness",
                 "avoid relying on shared-memory contents across tiles unless they are explicitly reloaded each iteration",
             ],
         },

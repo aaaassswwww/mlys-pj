@@ -184,7 +184,8 @@ class Phase2GeneratorTests(unittest.TestCase):
             },
         )
         self.assertIn('"optimization_priority": "correctness_first"', prompt)
-        self.assertIn("double accumulators for long dot products", prompt)
+        self.assertIn('"candidate_strategy": "match_reference_float32_semantics"', prompt)
+        self.assertIn("match the reference float32 matmul behavior as closely as possible", prompt)
 
 
 if __name__ == "__main__":
