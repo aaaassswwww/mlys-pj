@@ -6,6 +6,8 @@ from typing import Any
 
 from profiler_agent.phase2.models import Phase2OptimizerState
 
+_CANDIDATE_FAMILY_SUFFIX_RE = re.compile(r"(?:[_-]?v\d+|[_-]rev\d+|[_-]fix\d+)$", flags=re.IGNORECASE)
+
 
 def _extract_previous_rel_l2_err(feedback: dict[str, Any] | None) -> float | None:
     if not isinstance(feedback, dict):
@@ -225,6 +227,49 @@ def _extract_torch_precision_summary(feedback: dict[str, Any] | None) -> dict[st
     return None
 
 
+def _candidate_family(candidate_id: str) -> str:
+    value = candidate_id.strip()
+    if not value:
+        return ""
+    previous = None
+    while previous != value:
+        previous = value
+        value = _CANDIDATE_FAMILY_SUFFIX_RE.sub("", value).rstrip("_-")
+    return value
+
+
+def _extract_stable_patch_family_summary(state: Phase2OptimizerState) -> dict[str, Any] | None:
+    history = [item for item in state.llm_revision_history if isinstance(item, dict) and int(item.get("iteration", 0) or 0) > 0]
+    if len(history) < 3:
+        return None
+    recent = history[-3:]
+    candidate_ids: list[str] = []
+    revision_preferences: list[str] = []
+    for item in recent:
+        candidate_id = item.get("candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id.strip():
+            return None
+        candidate_ids.append(candidate_id)
+        generation_context = item.get("generation_context")
+        if isinstance(generation_context, dict):
+            revision_preferences.append(str(generation_context.get("revision_source_preference", "")))
+        else:
+            revision_preferences.append("")
+    families = [_candidate_family(candidate_id) for candidate_id in candidate_ids]
+    if not families or any(not family for family in families):
+        return None
+    if len(set(families)) != 1:
+        return None
+    if not all(pref == "previous_candidate_patch_first" for pref in revision_preferences):
+        return None
+    return {
+        "family_name": families[0],
+        "recent_candidate_ids": candidate_ids,
+        "recent_revision_preferences": revision_preferences,
+        "stable_patch_chain": True,
+    }
+
+
 def build_lora_generation_system_prompt() -> str:
     return (
         "You are generating a single-file CUDA C++ candidate for LoRA operator optimization. "
@@ -264,6 +309,7 @@ def build_lora_generation_user_prompt(
     per_spec_feedback = _extract_per_spec_summary(feedback)
     reference_diagnosis = _extract_reference_diagnosis_summary(feedback)
     torch_precision = _extract_torch_precision_summary(feedback)
+    stable_patch_family = _extract_stable_patch_family_summary(state)
     optimization_priority = "balanced"
     candidate_strategy = "normal_iteration"
     if previous_correctness_passed:
@@ -307,6 +353,9 @@ def build_lora_generation_user_prompt(
     previous_compile_ok = bool(feedback.get("compile_ok")) if isinstance(feedback, dict) else False
     if previous_candidate and previous_compile_ok and not previous_correctness_passed:
         revision_source_preference = "previous_candidate_patch_first"
+    patch_discipline = "normal"
+    if isinstance(stable_patch_family, dict):
+        patch_discipline = "strict_local_patch"
     strategy_specific_guidance: list[str] = []
     if candidate_strategy == "fit_torch_reference_over_naive":
         strategy_specific_guidance = [
@@ -362,10 +411,12 @@ def build_lora_generation_user_prompt(
         "candidate_strategy": candidate_strategy,
         "revision_mode": "modify_best_candidate_instead_of_regenerating_from_scratch" if (base_candidate or reference_like_candidate) else "from_scratch",
         "revision_source_preference": revision_source_preference,
+        "patch_discipline": patch_discipline,
         "focus_hidden_dim": focus_hidden_dim,
         "balance_priority": balance_priority,
         "reference_diagnosis_summary": reference_diagnosis or {},
         "torch_precision_summary": torch_precision or {},
+        "stable_patch_family_summary": stable_patch_family or {},
         "per_spec_feedback": per_spec_feedback,
         "previous_candidate": previous_candidate,
         "base_candidate": base_candidate,
@@ -409,6 +460,8 @@ def build_lora_generation_user_prompt(
                 "prefer correctness over speed",
                 "treat the structured per_spec feedback as the main source of truth for which hidden dimensions regressed or improved",
                 "revise the immediately previous candidate in place when it compiled and produced meaningful metrics; do not reset to a new baseline family unless the previous attempt catastrophically failed",
+                "if the recent revision history is already a stable patch chain within one candidate family, preserve that family and apply only a local numeric-path patch rather than renaming or re-architecting the candidate",
+                "when patch_discipline is strict_local_patch, do not introduce a new candidate family; keep the same structural skeleton and modify only one narrow behavior such as one stage, one rounding rule, one accumulation grouping, or one temp-handling detail",
                 "treat the preferred revision source candidate as the starting point and revise it instead of discarding it",
                 "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
                 "make the smallest set of changes that can plausibly improve correctness toward the reference",

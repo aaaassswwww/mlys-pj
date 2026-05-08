@@ -547,6 +547,50 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn("treat the structured per_spec feedback as the main source of truth", prompt)
         self.assertIn("revise the immediately previous candidate in place", prompt)
 
+    def test_user_prompt_enforces_strict_local_patch_for_stable_family_chain(self) -> None:
+        state = Phase2OptimizerState(
+            llm_revision_history=[
+                {
+                    "iteration": 11,
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v11",
+                    "generation_context": {"revision_source_preference": "previous_candidate_patch_first"},
+                },
+                {
+                    "iteration": 12,
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v12",
+                    "generation_context": {"revision_source_preference": "previous_candidate_patch_first"},
+                },
+                {
+                    "iteration": 13,
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v13",
+                    "generation_context": {"revision_source_preference": "previous_candidate_patch_first"},
+                },
+            ]
+        )
+        prompt = build_lora_generation_user_prompt(
+            state=state,
+            iteration=14,
+            best_speedup=0.0,
+            feedback={
+                "compile_ok": True,
+                "correctness": {
+                    "passed": False,
+                    "rel_l2_err": 3.0e-4,
+                    "max_abs_err": 0.55,
+                },
+                "previous_candidate": {
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v13",
+                    "rationale": "latest patch",
+                    "source": "llm_generated",
+                    "source_code": "prev source",
+                },
+            },
+        )
+        self.assertIn('"patch_discipline": "strict_local_patch"', prompt)
+        self.assertIn('"family_name": "simple_two_kernel_tf32_stage_selective"', prompt)
+        self.assertIn("do not introduce a new candidate family", prompt)
+        self.assertIn("apply only a local numeric-path patch", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
