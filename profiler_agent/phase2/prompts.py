@@ -137,6 +137,15 @@ def build_lora_generation_user_prompt(
     previous_rel_l2_err = _extract_previous_rel_l2_err(feedback)
     reference_diagnosis = _extract_reference_diagnosis_summary(feedback)
     torch_precision = _extract_torch_precision_summary(feedback)
+    optimization_priority = "balanced"
+    candidate_strategy = "normal_iteration"
+    if previous_rel_l2_err is not None and previous_rel_l2_err <= 1e-3:
+        optimization_priority = "correctness_first"
+        candidate_strategy = "match_reference_float32_semantics"
+        if isinstance(reference_diagnosis, dict) and reference_diagnosis.get("dominant_student_closer_to") == "naive":
+            candidate_strategy = "fit_torch_reference_over_naive"
+            if isinstance(torch_precision, dict) and torch_precision.get("matmul_allow_tf32") == "True":
+                candidate_strategy = "fit_torch_tf32_reference"
     base_candidate: dict[str, Any] = {}
     if state.current_best_candidate_id and state.current_best_source_code:
         base_candidate = {
@@ -152,15 +161,19 @@ def build_lora_generation_user_prompt(
             "best_rel_l2_err": state.best_rel_l2_err,
             "best_max_abs_err": state.best_max_abs_err,
         }
-    optimization_priority = "balanced"
-    candidate_strategy = "normal_iteration"
-    if previous_rel_l2_err is not None and previous_rel_l2_err <= 1e-3:
-        optimization_priority = "correctness_first"
-        candidate_strategy = "match_reference_float32_semantics"
-        if isinstance(reference_diagnosis, dict) and reference_diagnosis.get("dominant_student_closer_to") == "naive":
-            candidate_strategy = "fit_torch_reference_over_naive"
-            if isinstance(torch_precision, dict) and torch_precision.get("matmul_allow_tf32") == "True":
-                candidate_strategy = "fit_torch_tf32_reference"
+    reference_like_candidate: dict[str, Any] = {}
+    if state.current_best_reference_candidate_id and state.current_best_reference_source_code:
+        reference_like_candidate = {
+            "candidate_id": state.current_best_reference_candidate_id,
+            "source": state.current_best_reference_source or "unknown",
+            "rationale": state.current_best_reference_rationale,
+            "source_code": state.current_best_reference_source_code,
+            "selection_reason": "best_candidate_measured_closer_to_torch_reference",
+            "best_reference_rel_l2_err": state.best_reference_rel_l2_err,
+        }
+    revision_source_preference = "base_candidate"
+    if candidate_strategy == "fit_torch_tf32_reference" and reference_like_candidate:
+        revision_source_preference = "reference_like_candidate"
     strategy_specific_guidance: list[str] = []
     if candidate_strategy == "fit_torch_reference_over_naive":
         strategy_specific_guidance = [
@@ -177,6 +190,7 @@ def build_lora_generation_user_prompt(
             "If you use half intrinsics, you must include <cuda_fp16.h>, but prefer simpler numerically altered float-based reduction structures before attempting half-based approximations.",
             "Prefer changes that alter accumulation grouping or staging in a controlled way, while keeping the ABI and required math unchanged.",
             "Avoid cuBLAS or cuBLASLt because the current build/load path is not set up for those dependencies.",
+            "If a reference_like_candidate is provided, prefer revising that candidate over the naive-like base_candidate.",
         ]
     payload = {
         "task": "generate_lora_candidate",
@@ -184,10 +198,12 @@ def build_lora_generation_user_prompt(
         "operator": "Y = W X + A(B^T X)",
         "optimization_priority": optimization_priority,
         "candidate_strategy": candidate_strategy,
-        "revision_mode": "modify_best_candidate_instead_of_regenerating_from_scratch" if base_candidate else "from_scratch",
+        "revision_mode": "modify_best_candidate_instead_of_regenerating_from_scratch" if (base_candidate or reference_like_candidate) else "from_scratch",
+        "revision_source_preference": revision_source_preference,
         "reference_diagnosis_summary": reference_diagnosis or {},
         "torch_precision_summary": torch_precision or {},
         "base_candidate": base_candidate,
+        "reference_like_candidate": reference_like_candidate,
         "constraints": {
             "single_file_output": True,
             "forbid_external_downloads": True,
@@ -225,7 +241,7 @@ def build_lora_generation_user_prompt(
             "forbid_variable_length_shared_arrays": True,
             "when_correctness_is_close_but_failing": [
                 "prefer correctness over speed",
-                "treat base_candidate.source_code as the starting point and revise it instead of discarding it",
+                "treat the preferred revision source candidate as the starting point and revise it instead of discarding it",
                 "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
                 "make the smallest set of changes that can plausibly improve correctness toward the reference",
                 "prefer a simple two-kernel design over fused or tiled kernels",

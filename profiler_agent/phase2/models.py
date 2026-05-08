@@ -100,6 +100,11 @@ class Phase2OptimizerState:
     current_best_source_code: str = ""
     current_best_rationale: str = ""
     current_best_source: str = ""
+    current_best_reference_candidate_id: str | None = None
+    current_best_reference_source_code: str = ""
+    current_best_reference_rationale: str = ""
+    current_best_reference_source: str = ""
+    best_reference_rel_l2_err: float = float("inf")
     best_speedup: float = 0.0
     best_rel_l2_err: float = float("inf")
     best_max_abs_err: float = float("inf")

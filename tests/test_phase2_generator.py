@@ -344,7 +344,42 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"revision_mode": "modify_best_candidate_instead_of_regenerating_from_scratch"', prompt)
         self.assertIn('"candidate_id": "best-so-far"', prompt)
         self.assertIn('"selection_reason": "best_incorrect_candidate_closest_to_passing"', prompt)
-        self.assertIn("treat base_candidate.source_code as the starting point and revise it instead of discarding it", prompt)
+        self.assertIn("treat the preferred revision source candidate as the starting point and revise it instead of discarding it", prompt)
+
+    def test_user_prompt_prefers_reference_like_candidate_for_tf32_strategy(self) -> None:
+        state = Phase2OptimizerState(
+            current_best_candidate_id="best-naive-like",
+            current_best_source_code="naive source",
+            current_best_rationale="closest overall",
+            current_best_source="llm_generated",
+            best_rel_l2_err=4.0e-4,
+            best_max_abs_err=0.6,
+            current_best_reference_candidate_id="best-reference-like",
+            current_best_reference_source_code="reference-like source",
+            current_best_reference_rationale="closest to torch reference",
+            current_best_reference_source="llm_generated",
+            best_reference_rel_l2_err=3.2e-4,
+        )
+        prompt = build_lora_generation_user_prompt(
+            state=state,
+            iteration=15,
+            best_speedup=0.0,
+            feedback={
+                "correctness": {
+                    "passed": False,
+                    "rel_l2_err": 4.0e-4,
+                    "max_abs_err": 0.59,
+                },
+                "notes": [
+                    "reference_diagnosis:hidden_dim=4096:student_vs_reference_rel_l2=4.000000e-04:student_vs_naive_rel_l2=1.000000e-06:naive_vs_reference_rel_l2=4.010000e-04:student_closer_to=naive",
+                    "torch_precision_env:torch_available=True:cuda_available=True:matmul_allow_tf32=True:cudnn_allow_tf32=True:float32_matmul_precision=high",
+                ],
+            },
+        )
+        self.assertIn('"candidate_strategy": "fit_torch_tf32_reference"', prompt)
+        self.assertIn('"revision_source_preference": "reference_like_candidate"', prompt)
+        self.assertIn('"candidate_id": "best-reference-like"', prompt)
+        self.assertIn("prefer revising that candidate over the naive-like base_candidate", prompt)
 
 
 if __name__ == "__main__":
