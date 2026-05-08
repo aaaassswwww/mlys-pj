@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
@@ -14,6 +15,58 @@ def _extract_previous_rel_l2_err(feedback: dict[str, Any] | None) -> float | Non
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+def _extract_reference_diagnosis_summary(feedback: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(feedback, dict):
+        return None
+    notes = feedback.get("notes")
+    if not isinstance(notes, list):
+        return None
+    closer_counts = {"naive": 0, "reference": 0}
+    best_note = None
+    best_reference_gap = None
+    pattern = re.compile(
+        r"reference_diagnosis:hidden_dim=(?P<hidden_dim>\d+):"
+        r"student_vs_reference_rel_l2=(?P<student_ref>[0-9.eE+-]+):"
+        r"student_vs_naive_rel_l2=(?P<student_naive>[0-9.eE+-]+):"
+        r"naive_vs_reference_rel_l2=(?P<naive_ref>[0-9.eE+-]+):"
+        r"student_closer_to=(?P<closer_to>[a-zA-Z_]+)"
+    )
+    parsed_notes: list[dict[str, Any]] = []
+    for note in notes:
+        if not isinstance(note, str):
+            continue
+        match = pattern.fullmatch(note.strip())
+        if not match:
+            continue
+        payload = {
+            "hidden_dim": int(match.group("hidden_dim")),
+            "student_vs_reference_rel_l2": float(match.group("student_ref")),
+            "student_vs_naive_rel_l2": float(match.group("student_naive")),
+            "naive_vs_reference_rel_l2": float(match.group("naive_ref")),
+            "student_closer_to": match.group("closer_to"),
+        }
+        parsed_notes.append(payload)
+        closer_to = payload["student_closer_to"]
+        if closer_to in closer_counts:
+            closer_counts[closer_to] += 1
+        ref_gap = payload["student_vs_reference_rel_l2"]
+        if best_reference_gap is None or ref_gap < best_reference_gap:
+            best_reference_gap = ref_gap
+            best_note = payload
+    if not parsed_notes:
+        return None
+    dominant = "mixed"
+    if closer_counts["naive"] and not closer_counts["reference"]:
+        dominant = "naive"
+    elif closer_counts["reference"] and not closer_counts["naive"]:
+        dominant = "reference"
+    return {
+        "dominant_student_closer_to": dominant,
+        "closer_to_counts": closer_counts,
+        "best_reference_gap_case": best_note,
+    }
 
 
 def build_lora_generation_system_prompt() -> str:
@@ -49,17 +102,21 @@ def build_lora_generation_user_prompt(
     feedback: dict[str, Any] | None,
 ) -> str:
     previous_rel_l2_err = _extract_previous_rel_l2_err(feedback)
+    reference_diagnosis = _extract_reference_diagnosis_summary(feedback)
     optimization_priority = "balanced"
     candidate_strategy = "normal_iteration"
     if previous_rel_l2_err is not None and previous_rel_l2_err <= 1e-3:
         optimization_priority = "correctness_first"
         candidate_strategy = "match_reference_float32_semantics"
+        if isinstance(reference_diagnosis, dict) and reference_diagnosis.get("dominant_student_closer_to") == "naive":
+            candidate_strategy = "fit_torch_reference_over_naive"
     payload = {
         "task": "generate_lora_candidate",
         "iteration": iteration,
         "operator": "Y = W X + A(B^T X)",
         "optimization_priority": optimization_priority,
         "candidate_strategy": candidate_strategy,
+        "reference_diagnosis_summary": reference_diagnosis or {},
         "constraints": {
             "single_file_output": True,
             "forbid_external_downloads": True,
@@ -101,6 +158,7 @@ def build_lora_generation_user_prompt(
                 "prefer one output element per thread with straightforward row-major indexing",
                 "prefer simpler kernels over aggressive fusion",
                 "match the reference float32 matmul behavior as closely as possible",
+                "if diagnosis shows student_closer_to=naive, explicitly shift toward the torch reference path rather than the naive path",
                 "do not assume double accumulation is better if it changes the result away from the float32 reference",
                 "fully initialize outputs before any += accumulation",
                 "avoid unnecessary reassociation of reductions when trying to pass correctness",

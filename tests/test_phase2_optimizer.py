@@ -118,6 +118,8 @@ class Phase2OptimizerTests(unittest.TestCase):
             self.assertEqual(promoted_source, "// bad")
             self.assertEqual(state_json["current_best_candidate_id"], "bad")
             self.assertIsNone(state_json["current_best_correct_candidate_id"])
+            feedback = state_json["llm_revision_history"][-1]["feedback"]
+            self.assertIn("notes", feedback)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

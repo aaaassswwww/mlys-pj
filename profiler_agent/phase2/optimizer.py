@@ -147,6 +147,7 @@ def run_phase2_optimization(
                     "compilation": evaluation.compilation.to_dict() if evaluation.compilation is not None else {},
                     "load": evaluation.load.to_dict() if evaluation.load is not None else {},
                 },
+                notes=list(evaluation.notes),
             )
             state.llm_revision_history.append(
                 {

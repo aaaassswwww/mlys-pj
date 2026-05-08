@@ -189,6 +189,25 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn("prefer a simple two-kernel design over fused or tiled kernels", prompt)
         self.assertIn("avoid shared-memory tiling, vectorized casts, and warp-level tricks", prompt)
 
+    def test_user_prompt_switches_to_fit_torch_reference_when_diagnosis_says_naive(self) -> None:
+        prompt = build_lora_generation_user_prompt(
+            iteration=8,
+            best_speedup=0.0,
+            feedback={
+                "correctness": {
+                    "passed": False,
+                    "rel_l2_err": 4.0e-4,
+                    "max_abs_err": 0.59,
+                },
+                "notes": [
+                    "reference_diagnosis:hidden_dim=4096:student_vs_reference_rel_l2=4.000000e-04:student_vs_naive_rel_l2=1.000000e-06:naive_vs_reference_rel_l2=4.010000e-04:student_closer_to=naive"
+                ],
+            },
+        )
+        self.assertIn('"candidate_strategy": "fit_torch_reference_over_naive"', prompt)
+        self.assertIn('"dominant_student_closer_to": "naive"', prompt)
+        self.assertIn("if diagnosis shows student_closer_to=naive", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

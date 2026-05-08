@@ -139,10 +139,12 @@ def build_candidate_feedback(
     correctness: dict[str, Any] | None = None,
     benchmark: dict[str, Any] | None = None,
     profile: dict[str, Any] | None = None,
+    notes: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "compile_ok": bool(compile_ok),
         "correctness": correctness or {},
         "benchmark": benchmark or {},
         "profile": profile or {},
+        "notes": [str(item) for item in (notes or [])],
     }
