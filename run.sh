@@ -90,6 +90,7 @@ export PROFILER_AGENT_PHASE2_STOP_BUFFER_SECONDS="${PROFILER_AGENT_PHASE2_STOP_B
 export OPENAI_TIMEOUT_S="${OPENAI_TIMEOUT_S:-120}"
 export OPENAI_MAX_RETRIES="${OPENAI_MAX_RETRIES:-2}"
 export OPENAI_RETRY_BASE_S="${OPENAI_RETRY_BASE_S:-2}"
+export PROFILER_AGENT_LLM_PRECHECK="${PROFILER_AGENT_LLM_PRECHECK:-1}"
 TIME_BUDGET_ENABLED="${PROFILER_AGENT_ENABLE_TIME_BUDGET}"
 MAX_RUNTIME_SECONDS="${PROFILER_AGENT_MAX_RUNTIME_SECONDS}"
 SHELL_TIMEOUT_SECONDS="${PROFILER_AGENT_SHELL_TIMEOUT_SECONDS}"
@@ -154,6 +155,54 @@ Path("/workspace/.agent_artifacts/tf32_env.json").write_text(
 )
 PY
 echo "[run.sh] ---- end torch/cuda precision probe ----"
+
+if [[ "${PROFILER_AGENT_LLM_PRECHECK}" == "1" || "${PROFILER_AGENT_LLM_PRECHECK}" == "true" || "${PROFILER_AGENT_LLM_PRECHECK}" == "yes" || "${PROFILER_AGENT_LLM_PRECHECK}" == "on" ]]; then
+  if [[ -n "${LLM_SECRET_FILE}" && -f "${LLM_SECRET_FILE}" ]]; then
+    echo "[run.sh] ---- begin llm precheck ----"
+    python3 - "${LLM_SECRET_FILE}" "${LLM_BASE_URL_ARG}" "${LLM_MODEL_ARG}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from profiler_agent.multi_agent.llm_client import OpenAICompatibleLLMClient
+
+secret_file = Path(sys.argv[1])
+base_url = sys.argv[2] or None
+model = sys.argv[3] or None
+payload = {
+    "secret_file_exists": secret_file.exists(),
+    "base_url_override": base_url,
+    "model_override": model,
+}
+client = OpenAICompatibleLLMClient.from_secret_file(secret_file, base_url=base_url, model=model)
+if client is None:
+    payload["ok"] = False
+    payload["error"] = "unable_to_build_llm_client_from_secret_file"
+else:
+    payload["resolved_base_url"] = client.config.base_url
+    payload["resolved_model"] = client.config.model
+    try:
+        result = client.complete_json(
+            system_prompt="Return JSON only.",
+            user_prompt='{"task":"precheck","response_schema":{"ok":"bool","message":"short_string"},"instruction":"Return a tiny JSON object confirming the API call succeeded."}',
+        )
+        payload["ok"] = isinstance(result, dict)
+        payload["result"] = result
+        if result is None:
+            payload["error"] = "llm_complete_json_returned_none"
+    except Exception as exc:
+        payload["ok"] = False
+        payload["error"] = f"{type(exc).__name__}: {exc}"
+
+probe_path = Path("/workspace/.agent_artifacts/llm_precheck.json")
+probe_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+PY
+    echo "[run.sh] ---- end llm precheck ----"
+  else
+    echo "[run.sh] llm precheck skipped: no secret file configured"
+  fi
+fi
 
 # Phase 2 entrypoint: optimize and keep root-level optimized_lora.cu updated.
 RUN_RC=0
