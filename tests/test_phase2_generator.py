@@ -171,9 +171,74 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertEqual(candidate.source, "bootstrap_template")
         self.assertIn("contains_forbidden_host_side_test_harness", candidate.rationale)
 
+    def test_generate_candidate_rejects_malformed_global_qualifier(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "bad-global",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                'global__ void temp_kernel() {}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
+        }
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=7), feedback=None)
+        self.assertEqual(candidate.source, "bootstrap_template")
+        self.assertIn("contains_malformed_global_qualifier", candidate.rationale)
+
+    def test_generate_candidate_rejects_half_intrinsics_without_cuda_fp16_include(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "bad-half",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '__global__ void temp_kernel(float a, float b, float* out) {\n'
+                '  out[0] = __half2float(__float2half_rn(a * b));\n'
+                '}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
+        }
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=8), feedback=None)
+        self.assertEqual(candidate.source, "bootstrap_template")
+        self.assertIn("uses_half_intrinsics_without_cuda_fp16_include", candidate.rationale)
+
+    def test_generate_candidate_rejects_cublas_dependency(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "bad-cublas",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '#include <cublas_v2.h>\n'
+                '__global__ void k() {}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  cublasHandle_t handle;\n'
+                '  cublasCreate(&handle);\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
+        }
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=9), feedback=None)
+        self.assertEqual(candidate.source, "bootstrap_template")
+        self.assertIn("contains_cublas_dependency_not_supported_by_current_build", candidate.rationale)
+
     def test_user_prompt_switches_to_correctness_first_when_error_is_small(self) -> None:
         prompt = build_lora_generation_user_prompt(
-            iteration=7,
+            iteration=10,
             best_speedup=0.0,
             feedback={
                 "correctness": {
@@ -191,7 +256,7 @@ class Phase2GeneratorTests(unittest.TestCase):
 
     def test_user_prompt_switches_to_fit_torch_reference_when_diagnosis_says_naive(self) -> None:
         prompt = build_lora_generation_user_prompt(
-            iteration=8,
+            iteration=11,
             best_speedup=0.0,
             feedback={
                 "correctness": {
@@ -207,10 +272,11 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"candidate_strategy": "fit_torch_reference_over_naive"', prompt)
         self.assertIn('"dominant_student_closer_to": "naive"', prompt)
         self.assertIn("if diagnosis shows student_closer_to=naive", prompt)
+        self.assertIn("Do not simply regenerate the same naive two-kernel global-memory implementation", prompt)
 
     def test_user_prompt_switches_to_fit_torch_tf32_reference_when_tf32_enabled(self) -> None:
         prompt = build_lora_generation_user_prompt(
-            iteration=9,
+            iteration=12,
             best_speedup=0.0,
             feedback={
                 "correctness": {
@@ -227,6 +293,7 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"candidate_strategy": "fit_torch_tf32_reference"', prompt)
         self.assertIn('"matmul_allow_tf32": "True"', prompt)
         self.assertIn("better match the TF32-backed torch reference", prompt)
+        self.assertIn("Do not treat half precision as equivalent to TF32.", prompt)
 
 
 if __name__ == "__main__":

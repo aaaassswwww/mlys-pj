@@ -143,6 +143,23 @@ def build_lora_generation_user_prompt(
             candidate_strategy = "fit_torch_reference_over_naive"
             if isinstance(torch_precision, dict) and torch_precision.get("matmul_allow_tf32") == "True":
                 candidate_strategy = "fit_torch_tf32_reference"
+    strategy_specific_guidance: list[str] = []
+    if candidate_strategy == "fit_torch_reference_over_naive":
+        strategy_specific_guidance = [
+            "Your previous candidates were much closer to the naive mathematical loop order than to the PyTorch reference.",
+            "Do not simply regenerate the same naive two-kernel global-memory implementation with renamed variables.",
+            "Deliberately try a numerically different but still valid reduction path that can move the result toward the PyTorch reference.",
+            "Keep the implementation simple enough to compile and reason about, but change the effective accumulation path rather than repeating the same straightforward loop nest.",
+        ]
+    elif candidate_strategy == "fit_torch_tf32_reference":
+        strategy_specific_guidance = [
+            "The runtime environment indicates that PyTorch matmul is using a TF32-friendly path.",
+            "Do not keep reproducing the same naive float32 loop order; that has already been shown to match the naive reference instead of the PyTorch reference.",
+            "Do not treat half precision as equivalent to TF32.",
+            "If you use half intrinsics, you must include <cuda_fp16.h>, but prefer simpler numerically altered float-based reduction structures before attempting half-based approximations.",
+            "Prefer changes that alter accumulation grouping or staging in a controlled way, while keeping the ABI and required math unchanged.",
+            "Avoid cuBLAS or cuBLASLt because the current build/load path is not set up for those dependencies.",
+        ]
     payload = {
         "task": "generate_lora_candidate",
         "iteration": iteration,
@@ -200,6 +217,7 @@ def build_lora_generation_user_prompt(
                 "avoid shared-memory tiling, vectorized casts, and warp-level tricks until correctness is already passing",
                 "avoid relying on shared-memory contents across tiles unless they are explicitly reloaded each iteration",
             ],
+            "strategy_specific_guidance": strategy_specific_guidance,
         },
         "expected_json": {
             "candidate_id": "short_identifier",

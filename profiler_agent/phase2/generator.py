@@ -31,6 +31,8 @@ _FORBIDDEN_HOST_TEST_RE = re.compile(
     r"\b(?:int\s+main\s*\(|run_lora_forward\s*\(|cudaMemcpy(?:Async)?\s*\([^;]*cudaMemcpyHostToDevice)",
     flags=re.IGNORECASE,
 )
+_HALF_INTRINSIC_RE = re.compile(r"__(?:float2half(?:_rn)?|half2float)\s*\(")
+_LIKELY_TF32_HALF_SIM_RE = re.compile(r"\b(?:half_precision|tf32)[A-Za-z0-9_]*\b", flags=re.IGNORECASE)
 
 
 def _strip_fenced_code(text: str) -> str:
@@ -67,12 +69,20 @@ def _validate_source_code(source_code: str) -> tuple[bool, str]:
         return False, "contains_forbidden_main_function"
     if _FORBIDDEN_HOST_TEST_RE.search(source_code):
         return False, "contains_forbidden_host_side_test_harness"
+    if re.search(r"\bglobal__\b", source_code):
+        return False, "contains_malformed_global_qualifier"
     if not _ENTRYPOINT_SIGNATURE_RE.search(source_code):
         return False, "missing_or_mismatched_launch_optimized_lora_signature"
     if re.search(r"launch_optimized_lora\s*\([^)]*\bint\s+r\b", source_code):
         return False, "launch_optimized_lora_must_not_accept_runtime_rank_parameter"
     if _SHARED_RUNTIME_RANK_RE.search(source_code):
         return False, "contains_runtime_rank_sized_shared_array"
+    if ("cublas" in lowered or "cublaslt" in lowered) and "#include <cublas" in lowered:
+        return False, "contains_cublas_dependency_not_supported_by_current_build"
+    if _HALF_INTRINSIC_RE.search(source_code) and "#include <cuda_fp16.h>" not in source_code:
+        return False, "uses_half_intrinsics_without_cuda_fp16_include"
+    if _LIKELY_TF32_HALF_SIM_RE.search(source_code) and _HALF_INTRINSIC_RE.search(source_code):
+        return False, "contains_unreliable_half_based_tf32_simulation_attempt"
     return True, ""
 
 
