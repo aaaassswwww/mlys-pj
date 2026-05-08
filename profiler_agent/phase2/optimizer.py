@@ -121,6 +121,8 @@ def run_phase2_optimization(
                 state,
                 candidate_id=candidate.candidate_id,
                 source_code=candidate.source_code,
+                candidate_rationale=candidate.rationale,
+                candidate_source=candidate.source,
                 evaluation=evaluation,
             )
             if promoted:

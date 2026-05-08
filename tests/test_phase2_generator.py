@@ -238,6 +238,7 @@ class Phase2GeneratorTests(unittest.TestCase):
 
     def test_user_prompt_switches_to_correctness_first_when_error_is_small(self) -> None:
         prompt = build_lora_generation_user_prompt(
+            state=Phase2OptimizerState(),
             iteration=10,
             best_speedup=0.0,
             feedback={
@@ -256,6 +257,7 @@ class Phase2GeneratorTests(unittest.TestCase):
 
     def test_user_prompt_switches_to_fit_torch_reference_when_diagnosis_says_naive(self) -> None:
         prompt = build_lora_generation_user_prompt(
+            state=Phase2OptimizerState(),
             iteration=11,
             best_speedup=0.0,
             feedback={
@@ -276,6 +278,7 @@ class Phase2GeneratorTests(unittest.TestCase):
 
     def test_user_prompt_switches_to_fit_torch_tf32_reference_when_tf32_enabled(self) -> None:
         prompt = build_lora_generation_user_prompt(
+            state=Phase2OptimizerState(),
             iteration=12,
             best_speedup=0.0,
             feedback={
@@ -294,6 +297,32 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"matmul_allow_tf32": "True"', prompt)
         self.assertIn("better match the TF32-backed torch reference", prompt)
         self.assertIn("Do not treat half precision as equivalent to TF32.", prompt)
+
+    def test_user_prompt_includes_best_candidate_as_revision_base(self) -> None:
+        state = Phase2OptimizerState(
+            current_best_candidate_id="best-so-far",
+            current_best_source_code=(
+                '#include <cuda_runtime.h>\n'
+                '__global__ void temp_kernel() {}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {}\n'
+            ),
+            current_best_rationale="closest candidate so far",
+            current_best_source="llm_generated",
+            best_rel_l2_err=4.0e-4,
+            best_max_abs_err=0.6,
+        )
+        prompt = build_lora_generation_user_prompt(
+            state=state,
+            iteration=13,
+            best_speedup=0.0,
+            feedback=None,
+        )
+        self.assertIn('"revision_mode": "modify_best_candidate_instead_of_regenerating_from_scratch"', prompt)
+        self.assertIn('"candidate_id": "best-so-far"', prompt)
+        self.assertIn('"selection_reason": "best_incorrect_candidate_closest_to_passing"', prompt)
+        self.assertIn("treat base_candidate.source_code as the starting point and revise it instead of discarding it", prompt)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from profiler_agent.phase2.models import Phase2OptimizerState
+
 
 def _extract_previous_rel_l2_err(feedback: dict[str, Any] | None) -> float | None:
     if not isinstance(feedback, dict):
@@ -127,6 +129,7 @@ def build_lora_generation_system_prompt() -> str:
 
 def build_lora_generation_user_prompt(
     *,
+    state: Phase2OptimizerState,
     iteration: int,
     best_speedup: float,
     feedback: dict[str, Any] | None,
@@ -134,6 +137,21 @@ def build_lora_generation_user_prompt(
     previous_rel_l2_err = _extract_previous_rel_l2_err(feedback)
     reference_diagnosis = _extract_reference_diagnosis_summary(feedback)
     torch_precision = _extract_torch_precision_summary(feedback)
+    base_candidate: dict[str, Any] = {}
+    if state.current_best_candidate_id and state.current_best_source_code:
+        base_candidate = {
+            "candidate_id": state.current_best_candidate_id,
+            "source": state.current_best_source or "unknown",
+            "rationale": state.current_best_rationale,
+            "source_code": state.current_best_source_code,
+            "selection_reason": (
+                "best_correct_candidate"
+                if state.current_best_correct_candidate_id == state.current_best_candidate_id
+                else "best_incorrect_candidate_closest_to_passing"
+            ),
+            "best_rel_l2_err": state.best_rel_l2_err,
+            "best_max_abs_err": state.best_max_abs_err,
+        }
     optimization_priority = "balanced"
     candidate_strategy = "normal_iteration"
     if previous_rel_l2_err is not None and previous_rel_l2_err <= 1e-3:
@@ -166,8 +184,10 @@ def build_lora_generation_user_prompt(
         "operator": "Y = W X + A(B^T X)",
         "optimization_priority": optimization_priority,
         "candidate_strategy": candidate_strategy,
+        "revision_mode": "modify_best_candidate_instead_of_regenerating_from_scratch" if base_candidate else "from_scratch",
         "reference_diagnosis_summary": reference_diagnosis or {},
         "torch_precision_summary": torch_precision or {},
+        "base_candidate": base_candidate,
         "constraints": {
             "single_file_output": True,
             "forbid_external_downloads": True,
@@ -205,6 +225,9 @@ def build_lora_generation_user_prompt(
             "forbid_variable_length_shared_arrays": True,
             "when_correctness_is_close_but_failing": [
                 "prefer correctness over speed",
+                "treat base_candidate.source_code as the starting point and revise it instead of discarding it",
+                "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
+                "make the smallest set of changes that can plausibly improve correctness toward the reference",
                 "prefer a simple two-kernel design over fused or tiled kernels",
                 "prefer one output element per thread with straightforward row-major indexing",
                 "prefer simpler kernels over aggressive fusion",

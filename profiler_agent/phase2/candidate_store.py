@@ -24,11 +24,16 @@ def record_candidate_evaluation(
     *,
     candidate_id: str,
     source_code: str,
+    candidate_rationale: str = "",
+    candidate_source: str = "",
     evaluation: CandidateEvaluation,
 ) -> bool:
     entry = {
         "candidate_id": candidate_id,
         "source_code_preview": source_code[:500],
+        "source_code": source_code,
+        "candidate_rationale": candidate_rationale,
+        "candidate_source": candidate_source,
         "evaluation": evaluation.to_dict(),
     }
     state.candidate_history.append(entry)
@@ -57,11 +62,17 @@ def record_candidate_evaluation(
         state.best_max_abs_err = float(evaluation.correctness.max_abs_err)
         state.current_best_candidate_id = candidate_id
         state.current_best_correct_candidate_id = candidate_id
+        state.current_best_source_code = source_code
+        state.current_best_rationale = candidate_rationale
+        state.current_best_source = candidate_source
         promoted = True
     elif state.current_best_correct_candidate_id is None and _is_better_incorrect_candidate(state, evaluation):
         state.best_rel_l2_err = float(evaluation.correctness.rel_l2_err)
         state.best_max_abs_err = float(evaluation.correctness.max_abs_err)
         state.current_best_candidate_id = candidate_id
+        state.current_best_source_code = source_code
+        state.current_best_rationale = candidate_rationale
+        state.current_best_source = candidate_source
         promoted = True
     return promoted
 

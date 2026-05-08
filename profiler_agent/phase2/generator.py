@@ -215,6 +215,7 @@ class LoraCandidateGenerator:
         payload = self.llm_client.complete_json(
             system_prompt=build_lora_generation_system_prompt(),
             user_prompt=build_lora_generation_user_prompt(
+                state=state,
                 iteration=state.iteration,
                 best_speedup=state.best_speedup,
                 feedback=feedback,
