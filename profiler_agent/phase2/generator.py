@@ -32,7 +32,6 @@ _FORBIDDEN_HOST_TEST_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _HALF_INTRINSIC_RE = re.compile(r"__(?:float2half(?:_rn)?|half2float)\s*\(")
-_LIKELY_TF32_HALF_SIM_RE = re.compile(r"\b(?:half_precision|tf32)[A-Za-z0-9_]*\b", flags=re.IGNORECASE)
 
 
 def _strip_fenced_code(text: str) -> str:
@@ -81,8 +80,6 @@ def _validate_source_code(source_code: str) -> tuple[bool, str]:
         return False, "contains_cublas_dependency_not_supported_by_current_build"
     if _HALF_INTRINSIC_RE.search(source_code) and "#include <cuda_fp16.h>" not in source_code:
         return False, "uses_half_intrinsics_without_cuda_fp16_include"
-    if _LIKELY_TF32_HALF_SIM_RE.search(source_code) and _HALF_INTRINSIC_RE.search(source_code):
-        return False, "contains_unreliable_half_based_tf32_simulation_attempt"
     return True, ""
 
 

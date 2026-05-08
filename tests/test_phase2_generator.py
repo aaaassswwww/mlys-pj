@@ -236,10 +236,32 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertEqual(candidate.source, "bootstrap_template")
         self.assertIn("contains_cublas_dependency_not_supported_by_current_build", candidate.rationale)
 
+    def test_generate_candidate_allows_half_intrinsics_with_cuda_fp16_include(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "half-allowed",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '#include <cuda_fp16.h>\n'
+                '__global__ void temp_kernel(float a, float b, float* out) {\n'
+                '  out[0] = __half2float(__float2half_rn(a * b));\n'
+                '}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
+        }
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=10), feedback=None)
+        self.assertEqual(candidate.source, "llm_generated")
+
     def test_user_prompt_switches_to_correctness_first_when_error_is_small(self) -> None:
         prompt = build_lora_generation_user_prompt(
             state=Phase2OptimizerState(),
-            iteration=10,
+            iteration=11,
             best_speedup=0.0,
             feedback={
                 "correctness": {
@@ -258,7 +280,7 @@ class Phase2GeneratorTests(unittest.TestCase):
     def test_user_prompt_switches_to_fit_torch_reference_when_diagnosis_says_naive(self) -> None:
         prompt = build_lora_generation_user_prompt(
             state=Phase2OptimizerState(),
-            iteration=11,
+            iteration=12,
             best_speedup=0.0,
             feedback={
                 "correctness": {
@@ -279,7 +301,7 @@ class Phase2GeneratorTests(unittest.TestCase):
     def test_user_prompt_switches_to_fit_torch_tf32_reference_when_tf32_enabled(self) -> None:
         prompt = build_lora_generation_user_prompt(
             state=Phase2OptimizerState(),
-            iteration=12,
+            iteration=13,
             best_speedup=0.0,
             feedback={
                 "correctness": {
@@ -315,7 +337,7 @@ class Phase2GeneratorTests(unittest.TestCase):
         )
         prompt = build_lora_generation_user_prompt(
             state=state,
-            iteration=13,
+            iteration=14,
             best_speedup=0.0,
             feedback=None,
         )
