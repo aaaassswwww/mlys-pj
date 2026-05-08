@@ -208,6 +208,26 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"dominant_student_closer_to": "naive"', prompt)
         self.assertIn("if diagnosis shows student_closer_to=naive", prompt)
 
+    def test_user_prompt_switches_to_fit_torch_tf32_reference_when_tf32_enabled(self) -> None:
+        prompt = build_lora_generation_user_prompt(
+            iteration=9,
+            best_speedup=0.0,
+            feedback={
+                "correctness": {
+                    "passed": False,
+                    "rel_l2_err": 4.0e-4,
+                    "max_abs_err": 0.59,
+                },
+                "notes": [
+                    "reference_diagnosis:hidden_dim=4096:student_vs_reference_rel_l2=4.000000e-04:student_vs_naive_rel_l2=1.000000e-06:naive_vs_reference_rel_l2=4.010000e-04:student_closer_to=naive",
+                    "torch_precision_env:torch_available=True:cuda_available=True:matmul_allow_tf32=True:cudnn_allow_tf32=True:float32_matmul_precision=high",
+                ],
+            },
+        )
+        self.assertIn('"candidate_strategy": "fit_torch_tf32_reference"', prompt)
+        self.assertIn('"matmul_allow_tf32": "True"', prompt)
+        self.assertIn("better match the TF32-backed torch reference", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

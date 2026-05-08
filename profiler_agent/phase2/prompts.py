@@ -69,6 +69,36 @@ def _extract_reference_diagnosis_summary(feedback: dict[str, Any] | None) -> dic
     }
 
 
+def _extract_torch_precision_summary(feedback: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(feedback, dict):
+        return None
+    notes = feedback.get("notes")
+    if not isinstance(notes, list):
+        return None
+    pattern = re.compile(
+        r"torch_precision_env:"
+        r"torch_available=(?P<torch_available>[^:]+):"
+        r"cuda_available=(?P<cuda_available>[^:]+):"
+        r"matmul_allow_tf32=(?P<matmul_allow_tf32>[^:]+):"
+        r"cudnn_allow_tf32=(?P<cudnn_allow_tf32>[^:]+):"
+        r"float32_matmul_precision=(?P<float32_matmul_precision>.+)"
+    )
+    for note in notes:
+        if not isinstance(note, str):
+            continue
+        match = pattern.fullmatch(note.strip())
+        if not match:
+            continue
+        return {
+            "torch_available": match.group("torch_available"),
+            "cuda_available": match.group("cuda_available"),
+            "matmul_allow_tf32": match.group("matmul_allow_tf32"),
+            "cudnn_allow_tf32": match.group("cudnn_allow_tf32"),
+            "float32_matmul_precision": match.group("float32_matmul_precision"),
+        }
+    return None
+
+
 def build_lora_generation_system_prompt() -> str:
     return (
         "You are generating a single-file CUDA C++ candidate for LoRA operator optimization. "
@@ -103,6 +133,7 @@ def build_lora_generation_user_prompt(
 ) -> str:
     previous_rel_l2_err = _extract_previous_rel_l2_err(feedback)
     reference_diagnosis = _extract_reference_diagnosis_summary(feedback)
+    torch_precision = _extract_torch_precision_summary(feedback)
     optimization_priority = "balanced"
     candidate_strategy = "normal_iteration"
     if previous_rel_l2_err is not None and previous_rel_l2_err <= 1e-3:
@@ -110,6 +141,8 @@ def build_lora_generation_user_prompt(
         candidate_strategy = "match_reference_float32_semantics"
         if isinstance(reference_diagnosis, dict) and reference_diagnosis.get("dominant_student_closer_to") == "naive":
             candidate_strategy = "fit_torch_reference_over_naive"
+            if isinstance(torch_precision, dict) and torch_precision.get("matmul_allow_tf32") == "True":
+                candidate_strategy = "fit_torch_tf32_reference"
     payload = {
         "task": "generate_lora_candidate",
         "iteration": iteration,
@@ -117,6 +150,7 @@ def build_lora_generation_user_prompt(
         "optimization_priority": optimization_priority,
         "candidate_strategy": candidate_strategy,
         "reference_diagnosis_summary": reference_diagnosis or {},
+        "torch_precision_summary": torch_precision or {},
         "constraints": {
             "single_file_output": True,
             "forbid_external_downloads": True,
@@ -159,6 +193,7 @@ def build_lora_generation_user_prompt(
                 "prefer simpler kernels over aggressive fusion",
                 "match the reference float32 matmul behavior as closely as possible",
                 "if diagnosis shows student_closer_to=naive, explicitly shift toward the torch reference path rather than the naive path",
+                "if torch matmul TF32 is enabled in the runtime environment, prefer choices that better match the TF32-backed torch reference rather than strict naive float accumulation",
                 "do not assume double accumulation is better if it changes the result away from the float32 reference",
                 "fully initialize outputs before any += accumulation",
                 "avoid unnecessary reassociation of reductions when trying to pass correctness",

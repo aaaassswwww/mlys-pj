@@ -16,6 +16,7 @@ from profiler_agent.phase2.harness import (
     compute_speedup,
     empty_benchmark_result,
     generate_lora_inputs,
+    get_torch_precision_environment,
     lora_reference_forward,
     resolve_backend,
 )
@@ -228,6 +229,22 @@ def _append_reference_diagnosis_notes(
         f"student_vs_naive_rel_l2={float(diagnosis['student_vs_naive_rel_l2_err']):.6e}:"
         f"naive_vs_reference_rel_l2={float(diagnosis['naive_vs_reference_rel_l2_err']):.6e}:"
         f"student_closer_to={diagnosis['student_closer_to']}"
+    )
+
+
+def _append_torch_precision_environment_note(notes: list[str]) -> None:
+    try:
+        env = get_torch_precision_environment()
+    except Exception as exc:
+        notes.append(f"torch_precision_env_unavailable:{type(exc).__name__}")
+        return
+    notes.append(
+        "torch_precision_env:"
+        f"torch_available={env.get('torch_available')}:"
+        f"cuda_available={env.get('cuda_available')}:"
+        f"matmul_allow_tf32={env.get('matmul_allow_tf32')}:"
+        f"cudnn_allow_tf32={env.get('cudnn_allow_tf32')}:"
+        f"float32_matmul_precision={env.get('float32_matmul_precision')}"
     )
 
 
@@ -464,6 +481,7 @@ def build_harness_runtime_evaluator(
         student_benchmarks: list[BenchmarkResult] = []
         reference_benchmarks: list[BenchmarkResult] = []
         notes: list[str] = []
+        _append_torch_precision_environment_note(notes)
 
         for spec in problem_specs:
             try:

@@ -78,6 +78,32 @@ class PythonListBackend:
         return None
 
 
+def get_torch_precision_environment() -> dict[str, Any]:
+    try:
+        import torch  # type: ignore
+    except Exception:
+        return {
+            "torch_available": False,
+            "cuda_available": False,
+        }
+    cuda_available = bool(torch.cuda.is_available())
+    return {
+        "torch_available": True,
+        "cuda_available": cuda_available,
+        "matmul_allow_tf32": (
+            getattr(torch.backends.cuda.matmul, "allow_tf32", None)
+            if cuda_available and hasattr(torch.backends, "cuda")
+            else None
+        ),
+        "cudnn_allow_tf32": (
+            getattr(torch.backends.cudnn, "allow_tf32", None)
+            if cuda_available and hasattr(torch.backends, "cudnn")
+            else None
+        ),
+        "float32_matmul_precision": getattr(torch, "get_float32_matmul_precision", lambda: "unsupported")(),
+    }
+
+
 def resolve_backend() -> TensorBackend:
     try:
         import torch  # type: ignore

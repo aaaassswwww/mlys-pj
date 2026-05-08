@@ -181,6 +181,7 @@ class Phase2EvaluatorTests(unittest.TestCase):
         self.assertFalse(evaluation.correctness.passed)
         self.assertEqual(evaluation.speedup, 0.0)
         self.assertIn("correctness_not_yet_passing", evaluation.notes)
+        self.assertTrue(any(note.startswith("torch_precision_env:") for note in evaluation.notes))
         self.assertTrue(any(note.startswith("reference_diagnosis:hidden_dim=8:") for note in evaluation.notes))
 
     def test_harness_runtime_evaluator_reports_candidate_runner_error(self) -> None:
