@@ -35,32 +35,72 @@ class OpenAICompatibleLLMClient:
         self.config = config
 
     @classmethod
-    def from_env(cls) -> "OpenAICompatibleLLMClient | None":
-        api_key = os.environ.get("API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()
+    def _build_from_values(
+        cls,
+        *,
+        api_key: str,
+        base_url: str,
+        model: str,
+    ) -> "OpenAICompatibleLLMClient | None":
         if not api_key:
             return None
-        base_url = (
-            os.environ.get("BASE_URL", "").strip()
-            or os.environ.get("OPENAI_BASE_URL", "").strip()
-            or "https://api.openai.com/v1"
-        ).rstrip("/")
-        model = (
-            os.environ.get("BASE_MODEL", "").strip()
-            or os.environ.get("OPENAI_MODEL", "").strip()
-            or "gpt-5.4"
-        )
         timeout = int(os.environ.get("OPENAI_TIMEOUT_S", "30"))
         max_retries = int(os.environ.get("OPENAI_MAX_RETRIES", "2"))
         retry_base_s = float(os.environ.get("OPENAI_RETRY_BASE_S", "1.0"))
         return cls(
             OpenAICompatibleConfig(
                 api_key=api_key,
-                base_url=base_url,
+                base_url=base_url.rstrip("/"),
                 model=model,
                 timeout_s=timeout,
                 max_retries=max(0, max_retries),
                 retry_base_s=max(0.0, retry_base_s),
             )
+        )
+
+    @classmethod
+    def from_env(cls) -> "OpenAICompatibleLLMClient | None":
+        api_key = os.environ.get("API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()
+        base_url = (
+            os.environ.get("BASE_URL", "").strip()
+            or os.environ.get("OPENAI_BASE_URL", "").strip()
+            or "https://api.openai.com/v1"
+        )
+        model = (
+            os.environ.get("BASE_MODEL", "").strip()
+            or os.environ.get("OPENAI_MODEL", "").strip()
+            or "gpt-5.4"
+        )
+        return cls._build_from_values(api_key=api_key, base_url=base_url, model=model)
+
+    @classmethod
+    def from_secret_file(
+        cls,
+        secret_file: str | os.PathLike[str],
+        *,
+        base_url: str | None = None,
+        model: str | None = None,
+    ) -> "OpenAICompatibleLLMClient | None":
+        raw = Path(secret_file).read_text(encoding="utf-8").strip()
+        if not raw:
+            return None
+        file_api_key = raw
+        file_base_url = ""
+        file_model = ""
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            file_api_key = str(parsed.get("api_key", "")).strip()
+            file_base_url = str(parsed.get("base_url", "")).strip()
+            file_model = str(parsed.get("model", "")).strip()
+        resolved_base_url = (base_url or "").strip() or file_base_url or "https://api.openai.com/v1"
+        resolved_model = (model or "").strip() or file_model or "gpt-5.4"
+        return cls._build_from_values(
+            api_key=file_api_key.strip(),
+            base_url=resolved_base_url,
+            model=resolved_model,
         )
 
     def is_enabled(self) -> bool:

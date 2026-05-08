@@ -6,6 +6,82 @@ SPEC_PATH="/target/target_spec.json"
 ARTIFACT_DIR="${WORKSPACE_DIR}/.agent_artifacts"
 FINAL_OUTPUT="${WORKSPACE_DIR}/output.json"
 FINAL_KERNEL="${WORKSPACE_DIR}/optimized_lora.cu"
+
+# Optional inline LLM config for local/server runs.
+# Set RUN_SH_LLM_API_KEY to a real value when you want run.sh itself to drive Phase 2.
+# After the run, clear this line back to "" if you do not want the key to remain in the file.
+RUN_SH_LLM_API_KEY="sk-saTmyZdQxkRuY5ugmYdOqt2XN5vR4c4mWktAgEZib8oABE68"
+RUN_SH_LLM_BASE_URL="https://cc.580ai.net"
+RUN_SH_LLM_MODEL="gpt-5.4"
+
+LLM_SECRET_FILE=""
+LLM_BASE_URL_ARG=""
+LLM_MODEL_ARG=""
+PURGE_LLM_SECRET_FILE="0"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --llm-secret-file)
+      LLM_SECRET_FILE="${2:-}"
+      shift 2
+      ;;
+    --llm-base-url)
+      LLM_BASE_URL_ARG="${2:-}"
+      shift 2
+      ;;
+    --llm-model)
+      LLM_MODEL_ARG="${2:-}"
+      shift 2
+      ;;
+    --purge-llm-secret-file)
+      PURGE_LLM_SECRET_FILE="1"
+      shift
+      ;;
+    *)
+      echo "[run.sh] unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+cleanup_secret_file() {
+  if [[ "${PURGE_LLM_SECRET_FILE}" == "1" && -n "${LLM_SECRET_FILE}" && -f "${LLM_SECRET_FILE}" ]]; then
+    if command -v shred >/dev/null 2>&1; then
+      shred -u "${LLM_SECRET_FILE}" || rm -f "${LLM_SECRET_FILE}" || true
+    else
+      rm -f "${LLM_SECRET_FILE}" || true
+    fi
+  fi
+}
+
+if [[ -z "${LLM_SECRET_FILE}" && -n "${RUN_SH_LLM_API_KEY}" ]]; then
+  SECRET_DIR="/dev/shm"
+  if [[ ! -d "${SECRET_DIR}" || ! -w "${SECRET_DIR}" ]]; then
+    SECRET_DIR="${TMPDIR:-/tmp}"
+  fi
+  umask 077
+  LLM_SECRET_FILE="$(mktemp "${SECRET_DIR%/}/profiler_agent_llm_secret.XXXXXX")"
+  printf '%s\n' "${RUN_SH_LLM_API_KEY}" > "${LLM_SECRET_FILE}"
+  PURGE_LLM_SECRET_FILE="1"
+  if [[ -z "${LLM_BASE_URL_ARG}" && -n "${RUN_SH_LLM_BASE_URL}" ]]; then
+    LLM_BASE_URL_ARG="${RUN_SH_LLM_BASE_URL}"
+  fi
+  if [[ -z "${LLM_MODEL_ARG}" && -n "${RUN_SH_LLM_MODEL}" ]]; then
+    LLM_MODEL_ARG="${RUN_SH_LLM_MODEL}"
+  fi
+fi
+
+trap cleanup_secret_file EXIT
+LLM_ARGS=()
+if [[ -n "${LLM_SECRET_FILE}" ]]; then
+  LLM_ARGS+=(--llm-secret-file "${LLM_SECRET_FILE}")
+fi
+if [[ -n "${LLM_BASE_URL_ARG}" ]]; then
+  LLM_ARGS+=(--llm-base-url "${LLM_BASE_URL_ARG}")
+fi
+if [[ -n "${LLM_MODEL_ARG}" ]]; then
+  LLM_ARGS+=(--llm-model "${LLM_MODEL_ARG}")
+fi
 export PROFILER_AGENT_ENABLE_TIME_BUDGET="${PROFILER_AGENT_ENABLE_TIME_BUDGET:-1}"
 export PROFILER_AGENT_MAX_RUNTIME_SECONDS="${PROFILER_AGENT_MAX_RUNTIME_SECONDS:-1740}"
 export PROFILER_AGENT_SHELL_TIMEOUT_SECONDS="${PROFILER_AGENT_SHELL_TIMEOUT_SECONDS:-1755}"
@@ -89,18 +165,21 @@ if [[ "${TIME_BUDGET_ENABLED}" == "1" || "${TIME_BUDGET_ENABLED}" == "true" || "
     timeout "${SHELL_TIMEOUT_SECONDS}s" python3 -m profiler_agent.main \
       --mode phase2 \
       --out "${WORKSPACE_DIR}" \
-      --phase2-iterations "${PHASE2_ITERATIONS}" || RUN_RC=$?
+      --phase2-iterations "${PHASE2_ITERATIONS}" \
+      "${LLM_ARGS[@]}" || RUN_RC=$?
   else
     python3 -m profiler_agent.main \
       --mode phase2 \
       --out "${WORKSPACE_DIR}" \
-      --phase2-iterations "${PHASE2_ITERATIONS}" || RUN_RC=$?
+      --phase2-iterations "${PHASE2_ITERATIONS}" \
+      "${LLM_ARGS[@]}" || RUN_RC=$?
   fi
 else
   python3 -m profiler_agent.main \
     --mode phase2 \
     --out "${WORKSPACE_DIR}" \
-    --phase2-iterations "${PHASE2_ITERATIONS}" || RUN_RC=$?
+    --phase2-iterations "${PHASE2_ITERATIONS}" \
+    "${LLM_ARGS[@]}" || RUN_RC=$?
 fi
 
 # Package compatibility report artifact while keeping optimized_lora.cu as primary output.

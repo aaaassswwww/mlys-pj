@@ -7,6 +7,7 @@ from pathlib import Path
 
 from profiler_agent.io.load_target_spec import load_target_spec
 from profiler_agent.multi_agent import MultiAgentCoordinator, MultiAgentRequest
+from profiler_agent.multi_agent.llm_client import OpenAICompatibleLLMClient
 from profiler_agent.orchestrator.pipeline import execute
 from profiler_agent.phase2.workflow import run_default_phase2_workflow
 from profiler_agent.runtime_budget import initialize_runtime_budget
@@ -35,6 +36,24 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="maximum optimization iterations for phase2 workflow; 0 means iterate until time budget stop",
     )
+    parser.add_argument(
+        "--llm-secret-file",
+        type=Path,
+        default=None,
+        help="optional path to a raw API key file or JSON secret file with api_key/base_url/model",
+    )
+    parser.add_argument(
+        "--llm-base-url",
+        type=str,
+        default="",
+        help="optional explicit LLM base URL override when using --llm-secret-file",
+    )
+    parser.add_argument(
+        "--llm-model",
+        type=str,
+        default="",
+        help="optional explicit LLM model override when using --llm-secret-file",
+    )
     return parser.parse_args()
 
 
@@ -53,9 +72,20 @@ def main() -> int:
     args = parse_args()
     initialize_runtime_budget()
     if args.mode == "phase2":
+        llm_secret_file = getattr(args, "llm_secret_file", None)
+        llm_base_url = getattr(args, "llm_base_url", "")
+        llm_model = getattr(args, "llm_model", "")
+        llm_client = None
+        if llm_secret_file is not None:
+            llm_client = OpenAICompatibleLLMClient.from_secret_file(
+                llm_secret_file,
+                base_url=(llm_base_url or None),
+                model=(llm_model or None),
+            )
         result = run_default_phase2_workflow(
             root_dir=args.out,
             max_iterations=(None if int(args.phase2_iterations) <= 0 else int(args.phase2_iterations)),
+            llm_client=llm_client,
         )
         print(f"optimized_lora.cu: {result.optimized_lora_path or (args.out / 'optimized_lora.cu')}")
         print(f"phase2_state.json: {args.out / '.agent_artifacts' / 'phase2_state.json'}")

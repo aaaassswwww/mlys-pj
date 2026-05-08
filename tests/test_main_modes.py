@@ -153,6 +153,9 @@ class MainModeTests(unittest.TestCase):
                 mode="phase2",
                 objective="",
                 phase2_iterations=3,
+                llm_secret_file=None,
+                llm_base_url="",
+                llm_model="",
             )
             mock_phase2_workflow.return_value = Phase2OptimizationResult(
                 best_candidate_id="cand-1",
@@ -167,6 +170,60 @@ class MainModeTests(unittest.TestCase):
             mock_phase2_workflow.assert_called_once_with(
                 root_dir=out_dir,
                 max_iterations=3,
+                llm_client=None,
+            )
+            mock_load_spec.assert_not_called()
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    @patch("profiler_agent.main.OpenAICompatibleLLMClient")
+    @patch("profiler_agent.main.run_default_phase2_workflow")
+    @patch("profiler_agent.main.load_target_spec")
+    @patch("profiler_agent.main.parse_args")
+    def test_phase2_mode_builds_llm_client_from_secret_file(
+        self,
+        mock_parse_args: unittest.mock.Mock,
+        mock_load_spec: unittest.mock.Mock,
+        mock_phase2_workflow: unittest.mock.Mock,
+        mock_llm_client_cls: unittest.mock.Mock,
+    ) -> None:
+        out_dir = Path("tests/.tmp") / f"main_phase2_secret_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            secret_path = out_dir / "llm_secret.txt"
+            secret_path.write_text("secret\n", encoding="utf-8")
+            optimized_path = out_dir / "optimized_lora.cu"
+            llm_client = object()
+            mock_llm_client_cls.from_secret_file.return_value = llm_client
+            mock_parse_args.return_value = argparse.Namespace(
+                spec=Path("inputs/target_spec.json"),
+                out=out_dir,
+                mode="phase2",
+                objective="",
+                phase2_iterations=2,
+                llm_secret_file=secret_path,
+                llm_base_url="https://example.invalid/v1",
+                llm_model="gpt-5.4",
+            )
+            mock_phase2_workflow.return_value = Phase2OptimizationResult(
+                best_candidate_id="cand-1",
+                best_speedup=1.25,
+                iterations_run=2,
+                optimized_lora_path=optimized_path,
+                state=Phase2OptimizerState(iteration=2, current_best_candidate_id="cand-1", best_speedup=1.25),
+            )
+
+            rc = main()
+            self.assertEqual(rc, 0)
+            mock_llm_client_cls.from_secret_file.assert_called_once_with(
+                secret_path,
+                base_url="https://example.invalid/v1",
+                model="gpt-5.4",
+            )
+            mock_phase2_workflow.assert_called_once_with(
+                root_dir=out_dir,
+                max_iterations=2,
+                llm_client=llm_client,
             )
             mock_load_spec.assert_not_called()
         finally:

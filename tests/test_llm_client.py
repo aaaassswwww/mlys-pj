@@ -230,6 +230,39 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(first.get("error_category"), "incomplete_http_read")
         self.assertEqual(last.get("phase"), "json_parsed")
 
+    def test_from_secret_file_accepts_raw_key(self) -> None:
+        secret_path = self.tmp_dir / "raw_key.txt"
+        secret_path.write_text("secret-value\n", encoding="utf-8")
+        client = OpenAICompatibleLLMClient.from_secret_file(secret_path, model="gpt-5.4")
+        self.assertIsNotNone(client)
+        assert client is not None
+        self.assertEqual(client.config.api_key, "secret-value")
+        self.assertEqual(client.config.model, "gpt-5.4")
+        self.assertEqual(client.config.base_url, "https://api.openai.com/v1")
+
+    def test_from_secret_file_accepts_json_config_and_overrides(self) -> None:
+        secret_path = self.tmp_dir / "llm_secret.json"
+        secret_path.write_text(
+            json.dumps(
+                {
+                    "api_key": "json-secret",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "gpt-from-file",
+                }
+            ),
+            encoding="utf-8",
+        )
+        client = OpenAICompatibleLLMClient.from_secret_file(
+            secret_path,
+            base_url="https://override.invalid/v1",
+            model="gpt-5.4",
+        )
+        self.assertIsNotNone(client)
+        assert client is not None
+        self.assertEqual(client.config.api_key, "json-secret")
+        self.assertEqual(client.config.base_url, "https://override.invalid/v1")
+        self.assertEqual(client.config.model, "gpt-5.4")
+
 
 if __name__ == "__main__":
     unittest.main()
