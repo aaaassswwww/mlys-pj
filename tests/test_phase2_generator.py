@@ -342,6 +342,8 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn("better match the TF32-backed torch reference", prompt)
         self.assertIn("Do not treat half precision as equivalent to TF32.", prompt)
         self.assertIn("Do not use unsupported pseudo-TF32 intrinsics such as __float2tf32", prompt)
+        self.assertIn("Explicitly consider mixed numeric paths across stages", prompt)
+        self.assertIn("Treat the temp = B^T X stage, the W*X stage, and the A*temp stage as independently tunable numeric paths", prompt)
 
     def test_user_prompt_includes_best_candidate_as_revision_base(self) -> None:
         state = Phase2OptimizerState(
