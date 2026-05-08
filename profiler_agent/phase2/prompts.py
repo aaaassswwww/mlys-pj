@@ -205,6 +205,7 @@ def build_lora_generation_user_prompt(
         strategy_specific_guidance = [
             "The runtime environment indicates that PyTorch matmul is using a TF32-friendly path.",
             "Do not keep reproducing the same naive float32 loop order; that has already been shown to match the naive reference instead of the PyTorch reference.",
+            "Do not revert to a fully plain-float32 two-kernel baseline that removes all reduced-precision or tf32-like behavior from every stage; that fallback path has already been explored and is not the target direction.",
             "Do not treat half precision as equivalent to TF32.",
             "Do not use unsupported pseudo-TF32 intrinsics such as __float2tf32, __nv_float2tf32, or __nv_tf32_to_float.",
             "If you use half intrinsics, you must include <cuda_fp16.h>, but prefer simpler numerically altered float-based reduction structures before attempting half-based approximations.",
@@ -293,6 +294,7 @@ def build_lora_generation_user_prompt(
                 "if one hidden_dim is clearly worse than the others, prioritize fixing that worst hidden_dim without regressing the better ones",
                 "prefer balanced improvements across 3584, 4096, and 4608 over extreme overfitting to any single hidden_dim",
                 "treat regressions on already-strong hidden_dims as important failures even if one hidden_dim improves sharply",
+                "avoid resetting all stages back to the already-explored naive float32 baseline when reference-like mixed-stage variants are available",
                 "prefer a simple two-kernel design over fused or tiled kernels",
                 "prefer one output element per thread with straightforward row-major indexing",
                 "prefer simpler kernels over aggressive fusion",

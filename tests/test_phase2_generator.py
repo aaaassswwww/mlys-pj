@@ -340,6 +340,7 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"candidate_strategy": "fit_torch_tf32_reference"', prompt)
         self.assertIn('"matmul_allow_tf32": "True"', prompt)
         self.assertIn("better match the TF32-backed torch reference", prompt)
+        self.assertIn("Do not revert to a fully plain-float32 two-kernel baseline", prompt)
         self.assertIn("Do not treat half precision as equivalent to TF32.", prompt)
         self.assertIn("Do not use unsupported pseudo-TF32 intrinsics such as __float2tf32", prompt)
         self.assertIn("Explicitly consider mixed numeric paths across stages", prompt)
