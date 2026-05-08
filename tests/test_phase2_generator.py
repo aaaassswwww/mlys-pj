@@ -345,6 +345,8 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn("Do not use unsupported pseudo-TF32 intrinsics such as __float2tf32", prompt)
         self.assertIn("Explicitly consider mixed numeric paths across stages", prompt)
         self.assertIn("Treat the temp = B^T X stage, the W*X stage, and the A*temp stage as independently tunable numeric paths", prompt)
+        self.assertIn("prefer transplanting one local numeric-path idea from the reference_like_candidate into the base_candidate", prompt)
+        self.assertIn("Avoid whole-program rewrites that switch the complete candidate from one family to another", prompt)
 
     def test_user_prompt_includes_best_candidate_as_revision_base(self) -> None:
         state = Phase2OptimizerState(

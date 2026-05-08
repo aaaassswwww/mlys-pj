@@ -213,6 +213,8 @@ def build_lora_generation_user_prompt(
             "Keep revisions close to the best reference_like_candidate and make local numeric-path changes instead of rewriting the whole implementation.",
             "Explicitly consider mixed numeric paths across stages: for example, use a TF32-like path for W*X but preserve plain float32 behavior for the low-rank path, or vice versa, if that better matches the reference.",
             "Treat the temp = B^T X stage, the W*X stage, and the A*temp stage as independently tunable numeric paths rather than forcing all stages to use the same approximation.",
+            "When base_candidate and reference_like_candidate have different strengths, prefer transplanting one local numeric-path idea from the reference_like_candidate into the base_candidate rather than replacing the entire structure.",
+            "Avoid whole-program rewrites that switch the complete candidate from one family to another; preserve the base_candidate skeleton and only patch one stage or one accumulation path at a time.",
             "Prefer changes that alter accumulation grouping or staging in a controlled way, while keeping the ABI and required math unchanged.",
             "Avoid cuBLAS or cuBLASLt because the current build/load path is not set up for those dependencies.",
             "If a reference_like_candidate is provided, prefer revising that candidate over the naive-like base_candidate.",

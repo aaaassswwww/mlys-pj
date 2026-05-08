@@ -35,6 +35,10 @@ class MainModeTests(unittest.TestCase):
             out=out_dir,
             mode="single",
             objective="",
+            phase2_iterations=15,
+            llm_secret_file=None,
+            llm_base_url="",
+            llm_model="",
         )
         mock_load_spec.return_value = TargetSpec(targets=["dram_latency_cycles"], run="cmd /c echo x")
         mock_execute.return_value = PipelineOutput(
@@ -64,6 +68,10 @@ class MainModeTests(unittest.TestCase):
             out=out_dir,
             mode="single",
             objective="",
+            phase2_iterations=15,
+            llm_secret_file=None,
+            llm_base_url="",
+            llm_model="",
         )
         mock_load_spec.return_value = TargetSpec(targets=["dram_latency_cycles"], run="")
         mock_execute.return_value = PipelineOutput(
@@ -94,6 +102,10 @@ class MainModeTests(unittest.TestCase):
                 out=out_dir,
                 mode="multi",
                 objective="analyze this run",
+                phase2_iterations=15,
+                llm_secret_file=None,
+                llm_base_url="",
+                llm_model="",
             )
             mock_load_spec.return_value = TargetSpec(targets=["dram_latency_cycles"], run="cmd /c echo x")
 
