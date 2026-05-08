@@ -236,6 +236,28 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertEqual(candidate.source, "bootstrap_template")
         self.assertIn("contains_cublas_dependency_not_supported_by_current_build", candidate.rationale)
 
+    def test_generate_candidate_rejects_unsupported_tf32_intrinsics(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "bad-tf32",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '__global__ void temp_kernel(float a, float* out) {\n'
+                '  out[0] = __float2tf32(a);\n'
+                '}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
+        }
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=10), feedback=None)
+        self.assertEqual(candidate.source, "bootstrap_template")
+        self.assertIn("contains_unsupported_tf32_intrinsic_for_current_build", candidate.rationale)
+
     def test_generate_candidate_allows_half_intrinsics_with_cuda_fp16_include(self) -> None:
         mock_llm = Mock()
         mock_llm.is_enabled.return_value = True
@@ -319,6 +341,7 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"matmul_allow_tf32": "True"', prompt)
         self.assertIn("better match the TF32-backed torch reference", prompt)
         self.assertIn("Do not treat half precision as equivalent to TF32.", prompt)
+        self.assertIn("Do not use unsupported pseudo-TF32 intrinsics such as __float2tf32", prompt)
 
     def test_user_prompt_includes_best_candidate_as_revision_base(self) -> None:
         state = Phase2OptimizerState(

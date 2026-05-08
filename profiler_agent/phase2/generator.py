@@ -32,6 +32,10 @@ _FORBIDDEN_HOST_TEST_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _HALF_INTRINSIC_RE = re.compile(r"__(?:float2half(?:_rn)?|half2float)\s*\(")
+_UNSUPPORTED_TF32_INTRINSIC_RE = re.compile(
+    r"__(?:float2tf32|nv_float2tf32|nv_tf32_to_float)\s*\(",
+    flags=re.IGNORECASE,
+)
 
 
 def _strip_fenced_code(text: str) -> str:
@@ -78,6 +82,8 @@ def _validate_source_code(source_code: str) -> tuple[bool, str]:
         return False, "contains_runtime_rank_sized_shared_array"
     if ("cublas" in lowered or "cublaslt" in lowered) and "#include <cublas" in lowered:
         return False, "contains_cublas_dependency_not_supported_by_current_build"
+    if _UNSUPPORTED_TF32_INTRINSIC_RE.search(source_code):
+        return False, "contains_unsupported_tf32_intrinsic_for_current_build"
     if _HALF_INTRINSIC_RE.search(source_code) and "#include <cuda_fp16.h>" not in source_code:
         return False, "uses_half_intrinsics_without_cuda_fp16_include"
     return True, ""
