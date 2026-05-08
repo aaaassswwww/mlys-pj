@@ -186,6 +186,8 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"optimization_priority": "correctness_first"', prompt)
         self.assertIn('"candidate_strategy": "match_reference_float32_semantics"', prompt)
         self.assertIn("match the reference float32 matmul behavior as closely as possible", prompt)
+        self.assertIn("prefer a simple two-kernel design over fused or tiled kernels", prompt)
+        self.assertIn("avoid shared-memory tiling, vectorized casts, and warp-level tricks", prompt)
 
 
 if __name__ == "__main__":

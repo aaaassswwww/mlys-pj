@@ -36,7 +36,9 @@ def build_lora_generation_system_prompt() -> str:
         "Y[i, j] = sum_t W[i, t] * X[t, j] + sum_k A[i, k] * temp[k, j]. "
         "Assume the low rank is fixed to 16 at compile time; do not introduce a runtime rank parameter. "
         "Avoid variable-length shared-memory arrays and avoid shared-memory declarations whose size depends on runtime variables. "
-        "If previous correctness is close but still failing, prioritize correctness over speed and match the reference float32 behavior as closely as possible: prefer simpler kernels, deterministic writes, full initialization before any += accumulation, and avoid unnecessary changes in accumulation precision or reassociation that can drift away from float32 matmul semantics."
+        "If previous correctness is close but still failing, prioritize correctness over speed and match the reference float32 behavior as closely as possible: prefer simpler kernels, deterministic writes, full initialization before any += accumulation, and avoid unnecessary changes in accumulation precision or reassociation that can drift away from float32 matmul semantics. "
+        "When in doubt, prefer a simple two-kernel design: one kernel computes temp = B^T X, and one kernel computes Y = W X + A temp. "
+        "Avoid shared-memory tiling, fused kernels, warp-specialized tricks, vectorized reinterpret casts, and other aggressive optimizations until correctness is already passing."
     )
 
 
@@ -95,11 +97,14 @@ def build_lora_generation_user_prompt(
             "forbid_variable_length_shared_arrays": True,
             "when_correctness_is_close_but_failing": [
                 "prefer correctness over speed",
+                "prefer a simple two-kernel design over fused or tiled kernels",
+                "prefer one output element per thread with straightforward row-major indexing",
                 "prefer simpler kernels over aggressive fusion",
                 "match the reference float32 matmul behavior as closely as possible",
                 "do not assume double accumulation is better if it changes the result away from the float32 reference",
                 "fully initialize outputs before any += accumulation",
                 "avoid unnecessary reassociation of reductions when trying to pass correctness",
+                "avoid shared-memory tiling, vectorized casts, and warp-level tricks until correctness is already passing",
                 "avoid relying on shared-memory contents across tiles unless they are explicitly reloaded each iteration",
             ],
         },
