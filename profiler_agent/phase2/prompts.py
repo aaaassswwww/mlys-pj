@@ -19,6 +19,15 @@ def _extract_previous_rel_l2_err(feedback: dict[str, Any] | None) -> float | Non
     return None
 
 
+def _extract_previous_correctness_passed(feedback: dict[str, Any] | None) -> bool:
+    if not isinstance(feedback, dict):
+        return False
+    correctness = feedback.get("correctness")
+    if not isinstance(correctness, dict):
+        return False
+    return bool(correctness.get("passed"))
+
+
 def _extract_reference_diagnosis_summary(feedback: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(feedback, dict):
         return None
@@ -64,10 +73,12 @@ def _extract_reference_diagnosis_summary(feedback: dict[str, Any] | None) -> dic
         dominant = "naive"
     elif closer_counts["reference"] and not closer_counts["naive"]:
         dominant = "reference"
+    worst_note = max(parsed_notes, key=lambda item: float(item["student_vs_reference_rel_l2"]))
     return {
         "dominant_student_closer_to": dominant,
         "closer_to_counts": closer_counts,
         "best_reference_gap_case": best_note,
+        "worst_reference_gap_case": worst_note,
     }
 
 
@@ -134,12 +145,16 @@ def build_lora_generation_user_prompt(
     best_speedup: float,
     feedback: dict[str, Any] | None,
 ) -> str:
+    previous_correctness_passed = _extract_previous_correctness_passed(feedback)
     previous_rel_l2_err = _extract_previous_rel_l2_err(feedback)
     reference_diagnosis = _extract_reference_diagnosis_summary(feedback)
     torch_precision = _extract_torch_precision_summary(feedback)
     optimization_priority = "balanced"
     candidate_strategy = "normal_iteration"
-    if previous_rel_l2_err is not None and previous_rel_l2_err <= 1e-3:
+    if previous_correctness_passed:
+        optimization_priority = "speedup_after_correctness"
+        candidate_strategy = "speedup_preserve_correctness"
+    elif previous_rel_l2_err is not None and previous_rel_l2_err <= 1e-3:
         optimization_priority = "correctness_first"
         candidate_strategy = "match_reference_float32_semantics"
         if isinstance(reference_diagnosis, dict) and reference_diagnosis.get("dominant_student_closer_to") == "naive":
@@ -195,6 +210,20 @@ def build_lora_generation_user_prompt(
             "Avoid cuBLAS or cuBLASLt because the current build/load path is not set up for those dependencies.",
             "If a reference_like_candidate is provided, prefer revising that candidate over the naive-like base_candidate.",
         ]
+    elif candidate_strategy == "speedup_preserve_correctness":
+        strategy_specific_guidance = [
+            "The previous candidate already passed correctness, so preserve its numerical behavior and optimize speed cautiously.",
+            "Do not make broad numeric-path changes that could lose correctness.",
+            "Prefer local performance improvements such as safer launch changes, memory-access cleanup, or low-risk staging improvements.",
+            "Keep the current best correct candidate as the primary revision base unless there is a specific measured reason to change strategy.",
+        ]
+    focus_hidden_dim: int | None = None
+    if isinstance(reference_diagnosis, dict):
+        worst_case = reference_diagnosis.get("worst_reference_gap_case")
+        if isinstance(worst_case, dict):
+            hidden_dim = worst_case.get("hidden_dim")
+            if isinstance(hidden_dim, int):
+                focus_hidden_dim = hidden_dim
     payload = {
         "task": "generate_lora_candidate",
         "iteration": iteration,
@@ -203,6 +232,7 @@ def build_lora_generation_user_prompt(
         "candidate_strategy": candidate_strategy,
         "revision_mode": "modify_best_candidate_instead_of_regenerating_from_scratch" if (base_candidate or reference_like_candidate) else "from_scratch",
         "revision_source_preference": revision_source_preference,
+        "focus_hidden_dim": focus_hidden_dim,
         "reference_diagnosis_summary": reference_diagnosis or {},
         "torch_precision_summary": torch_precision or {},
         "base_candidate": base_candidate,
@@ -247,6 +277,7 @@ def build_lora_generation_user_prompt(
                 "treat the preferred revision source candidate as the starting point and revise it instead of discarding it",
                 "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
                 "make the smallest set of changes that can plausibly improve correctness toward the reference",
+                "if one hidden_dim is clearly worse than the others, prioritize fixing that worst hidden_dim without regressing the better ones",
                 "prefer a simple two-kernel design over fused or tiled kernels",
                 "prefer one output element per thread with straightforward row-major indexing",
                 "prefer simpler kernels over aggressive fusion",

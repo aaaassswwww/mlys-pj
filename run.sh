@@ -159,8 +159,11 @@ echo "[run.sh] ---- end torch/cuda precision probe ----"
 if [[ "${PROFILER_AGENT_LLM_PRECHECK}" == "1" || "${PROFILER_AGENT_LLM_PRECHECK}" == "true" || "${PROFILER_AGENT_LLM_PRECHECK}" == "yes" || "${PROFILER_AGENT_LLM_PRECHECK}" == "on" ]]; then
   if [[ -n "${LLM_SECRET_FILE}" && -f "${LLM_SECRET_FILE}" ]]; then
     echo "[run.sh] ---- begin llm precheck ----"
+    export PROFILER_AGENT_LLM_DEBUG_PATH="/workspace/.agent_artifacts/llm_precheck_debug.jsonl"
+    rm -f "${PROFILER_AGENT_LLM_DEBUG_PATH}"
     python3 - "${LLM_SECRET_FILE}" "${LLM_BASE_URL_ARG}" "${LLM_MODEL_ARG}" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -197,6 +200,24 @@ else:
 probe_path = Path("/workspace/.agent_artifacts/llm_precheck.json")
 probe_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+debug_path = Path(os.environ.get("PROFILER_AGENT_LLM_DEBUG_PATH", "")).expanduser()
+if debug_path and debug_path.exists():
+    try:
+        last_line = debug_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+        debug_payload = json.loads(last_line)
+        summary = {
+            "phase": debug_payload.get("phase"),
+            "http_status": debug_payload.get("http_status"),
+            "error_category": debug_payload.get("error_category"),
+            "error_type": debug_payload.get("error_type"),
+            "error_message": debug_payload.get("error_message"),
+            "url": debug_payload.get("url"),
+            "retryable": debug_payload.get("retryable"),
+            "will_retry": debug_payload.get("will_retry"),
+        }
+        print(json.dumps({"llm_precheck_debug": summary}, ensure_ascii=False, sort_keys=True))
+    except Exception as exc:
+        print(json.dumps({"llm_precheck_debug_error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False, sort_keys=True))
 PY
     echo "[run.sh] ---- end llm precheck ----"
   else

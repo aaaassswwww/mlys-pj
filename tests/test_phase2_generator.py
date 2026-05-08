@@ -404,6 +404,52 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"candidate_id": "best-reference-like"', prompt)
         self.assertIn("prefer revising that candidate over the naive-like base_candidate", prompt)
 
+    def test_user_prompt_focuses_worst_hidden_dim_when_close_but_failing(self) -> None:
+        prompt = build_lora_generation_user_prompt(
+            state=Phase2OptimizerState(),
+            iteration=16,
+            best_speedup=0.0,
+            feedback={
+                "correctness": {
+                    "passed": False,
+                    "rel_l2_err": 4.0e-4,
+                    "max_abs_err": 0.59,
+                },
+                "notes": [
+                    "reference_diagnosis:hidden_dim=3584:student_vs_reference_rel_l2=3.800000e-04:student_vs_naive_rel_l2=1.000000e-06:naive_vs_reference_rel_l2=3.810000e-04:student_closer_to=naive",
+                    "reference_diagnosis:hidden_dim=4096:student_vs_reference_rel_l2=4.400000e-05:student_vs_naive_rel_l2=3.700000e-04:naive_vs_reference_rel_l2=3.680000e-04:student_closer_to=reference",
+                    "reference_diagnosis:hidden_dim=4608:student_vs_reference_rel_l2=2.300000e-05:student_vs_naive_rel_l2=4.000000e-04:naive_vs_reference_rel_l2=4.030000e-04:student_closer_to=reference",
+                ],
+            },
+        )
+        self.assertIn('"focus_hidden_dim": 3584', prompt)
+        self.assertIn("if one hidden_dim is clearly worse than the others, prioritize fixing that worst hidden_dim", prompt)
+
+    def test_user_prompt_switches_to_speedup_after_correctness(self) -> None:
+        state = Phase2OptimizerState(
+            current_best_candidate_id="correct-best",
+            current_best_correct_candidate_id="correct-best",
+            current_best_source_code="correct source",
+            current_best_rationale="correct and fast baseline",
+            current_best_source="llm_generated",
+            best_speedup=1.2,
+        )
+        prompt = build_lora_generation_user_prompt(
+            state=state,
+            iteration=17,
+            best_speedup=1.2,
+            feedback={
+                "correctness": {
+                    "passed": True,
+                    "rel_l2_err": 0.0,
+                    "max_abs_err": 0.0,
+                }
+            },
+        )
+        self.assertIn('"optimization_priority": "speedup_after_correctness"', prompt)
+        self.assertIn('"candidate_strategy": "speedup_preserve_correctness"', prompt)
+        self.assertIn("preserve its numerical behavior and optimize speed cautiously", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
