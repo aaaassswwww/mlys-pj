@@ -425,7 +425,10 @@ class Phase2GeneratorTests(unittest.TestCase):
             },
         )
         self.assertIn('"focus_hidden_dim": 3584', prompt)
+        self.assertIn('"balance_priority": "high"', prompt)
         self.assertIn("if one hidden_dim is clearly worse than the others, prioritize fixing that worst hidden_dim", prompt)
+        self.assertIn("prefer balanced improvements across 3584, 4096, and 4608", prompt)
+        self.assertIn("treat regressions on already-strong hidden_dims as important failures", prompt)
 
     def test_user_prompt_switches_to_speedup_after_correctness(self) -> None:
         state = Phase2OptimizerState(
@@ -451,6 +454,28 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn('"optimization_priority": "speedup_after_correctness"', prompt)
         self.assertIn('"candidate_strategy": "speedup_preserve_correctness"', prompt)
         self.assertIn("preserve its numerical behavior and optimize speed cautiously", prompt)
+
+    def test_user_prompt_tf32_strategy_mentions_balanced_multi_dim_behavior(self) -> None:
+        prompt = build_lora_generation_user_prompt(
+            state=Phase2OptimizerState(),
+            iteration=18,
+            best_speedup=0.0,
+            feedback={
+                "correctness": {
+                    "passed": False,
+                    "rel_l2_err": 3.0e-4,
+                    "max_abs_err": 0.55,
+                },
+                "notes": [
+                    "reference_diagnosis:hidden_dim=3584:student_vs_reference_rel_l2=2.700000e-04:student_vs_naive_rel_l2=2.000000e-04:naive_vs_reference_rel_l2=6.600000e-05:student_closer_to=naive",
+                    "reference_diagnosis:hidden_dim=4096:student_vs_reference_rel_l2=4.100000e-04:student_vs_naive_rel_l2=7.000000e-05:naive_vs_reference_rel_l2=4.700000e-04:student_closer_to=naive",
+                    "reference_diagnosis:hidden_dim=4608:student_vs_reference_rel_l2=2.700000e-04:student_vs_naive_rel_l2=8.000000e-05:naive_vs_reference_rel_l2=3.700000e-04:student_closer_to=naive",
+                    "torch_precision_env:torch_available=True:cuda_available=True:matmul_allow_tf32=True:cudnn_allow_tf32=True:float32_matmul_precision=high",
+                ],
+            },
+        )
+        self.assertIn('"candidate_strategy": "fit_torch_tf32_reference"', prompt)
+        self.assertIn("Optimize for balanced behavior across all tested hidden dimensions", prompt)
 
 
 if __name__ == "__main__":

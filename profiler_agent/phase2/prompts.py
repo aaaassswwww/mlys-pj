@@ -74,11 +74,15 @@ def _extract_reference_diagnosis_summary(feedback: dict[str, Any] | None) -> dic
     elif closer_counts["reference"] and not closer_counts["naive"]:
         dominant = "reference"
     worst_note = max(parsed_notes, key=lambda item: float(item["student_vs_reference_rel_l2"]))
+    spread = max(float(item["student_vs_reference_rel_l2"]) for item in parsed_notes) - min(
+        float(item["student_vs_reference_rel_l2"]) for item in parsed_notes
+    )
     return {
         "dominant_student_closer_to": dominant,
         "closer_to_counts": closer_counts,
         "best_reference_gap_case": best_note,
         "worst_reference_gap_case": worst_note,
+        "reference_gap_spread": spread,
     }
 
 
@@ -211,6 +215,7 @@ def build_lora_generation_user_prompt(
             "Prefer changes that alter accumulation grouping or staging in a controlled way, while keeping the ABI and required math unchanged.",
             "Avoid cuBLAS or cuBLASLt because the current build/load path is not set up for those dependencies.",
             "If a reference_like_candidate is provided, prefer revising that candidate over the naive-like base_candidate.",
+            "Optimize for balanced behavior across all tested hidden dimensions rather than overfitting one dimension to an extremely low diagnostic error.",
         ]
     elif candidate_strategy == "speedup_preserve_correctness":
         strategy_specific_guidance = [
@@ -226,6 +231,11 @@ def build_lora_generation_user_prompt(
             hidden_dim = worst_case.get("hidden_dim")
             if isinstance(hidden_dim, int):
                 focus_hidden_dim = hidden_dim
+    balance_priority = "normal"
+    if isinstance(reference_diagnosis, dict):
+        spread = reference_diagnosis.get("reference_gap_spread")
+        if isinstance(spread, (int, float)) and float(spread) >= 1e-4:
+            balance_priority = "high"
     payload = {
         "task": "generate_lora_candidate",
         "iteration": iteration,
@@ -235,6 +245,7 @@ def build_lora_generation_user_prompt(
         "revision_mode": "modify_best_candidate_instead_of_regenerating_from_scratch" if (base_candidate or reference_like_candidate) else "from_scratch",
         "revision_source_preference": revision_source_preference,
         "focus_hidden_dim": focus_hidden_dim,
+        "balance_priority": balance_priority,
         "reference_diagnosis_summary": reference_diagnosis or {},
         "torch_precision_summary": torch_precision or {},
         "base_candidate": base_candidate,
@@ -280,6 +291,8 @@ def build_lora_generation_user_prompt(
                 "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
                 "make the smallest set of changes that can plausibly improve correctness toward the reference",
                 "if one hidden_dim is clearly worse than the others, prioritize fixing that worst hidden_dim without regressing the better ones",
+                "prefer balanced improvements across 3584, 4096, and 4608 over extreme overfitting to any single hidden_dim",
+                "treat regressions on already-strong hidden_dims as important failures even if one hidden_dim improves sharply",
                 "prefer a simple two-kernel design over fused or tiled kernels",
                 "prefer one output element per thread with straightforward row-major indexing",
                 "prefer simpler kernels over aggressive fusion",
