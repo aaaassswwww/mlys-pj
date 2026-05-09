@@ -367,6 +367,59 @@ class Phase2OptimizerTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_optimizer_prefers_best_correct_family_as_generation_source_after_correctness(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_opt_correct_anchor_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            generated_ids: list[str] = []
+
+            def generator(state: Phase2OptimizerState, feedback):
+                _ = feedback
+                candidate_id = f"cand-{state.iteration}"
+                generated_ids.append(candidate_id)
+                return GeneratedCandidate(candidate_id=candidate_id, source_code=f"// {candidate_id}")
+
+            def evaluator(candidate: GeneratedCandidate) -> CandidateEvaluation:
+                correctness = CorrectnessResult(passed=True, max_abs_err=0.0, rel_l2_err=0.0, rtol=1e-4, atol=1e-4)
+                bench_student = BenchmarkResult(
+                    warmup_runs=1,
+                    measured_runs=3,
+                    median_runtime_ms=10.0,
+                    min_runtime_ms=9.0,
+                    max_runtime_ms=11.0,
+                    all_runtime_ms=[10.0, 10.0, 10.0],
+                )
+                bench_ref = BenchmarkResult(
+                    warmup_runs=1,
+                    measured_runs=3,
+                    median_runtime_ms=12.0,
+                    min_runtime_ms=11.0,
+                    max_runtime_ms=13.0,
+                    all_runtime_ms=[12.0, 12.0, 12.0],
+                )
+                return CandidateEvaluation(
+                    candidate_id=candidate.candidate_id,
+                    correctness=correctness,
+                    student_benchmark=bench_student,
+                    reference_benchmark=bench_ref,
+                    speedup=1.0 + (0.01 * int(candidate.candidate_id.split("-")[-1])),
+                )
+
+            with patch.dict("os.environ", {"PROFILER_AGENT_PHASE2_SPEEDUP_ITERATIONS": "3"}, clear=False):
+                run_phase2_optimization(
+                    root_dir=root,
+                    max_iterations=2,
+                    candidate_generator=generator,
+                    candidate_evaluator=evaluator,
+                )
+
+            report_json = json.loads((root / ".agent_artifacts" / "phase2_report.json").read_text(encoding="utf-8"))
+            recent_chain = report_json["revision_linkage_summary"]["recent_revision_chain"]
+            self.assertGreaterEqual(len(recent_chain), 2)
+            self.assertEqual(recent_chain[-1]["selected_revision_preference"], "current_best_correct_candidate")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_optimizer_persists_partial_state_when_runtime_subprocess_startup_fails(self) -> None:
         root = Path("tests/.tmp") / f"phase2_opt_subproc_startup_fail_{uuid4().hex}"
         root.mkdir(parents=True, exist_ok=True)

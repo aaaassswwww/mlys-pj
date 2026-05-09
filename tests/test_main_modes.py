@@ -18,6 +18,14 @@ from profiler_agent.tool_adapters.binary_runner import RunResult
 
 
 class MainModeTests(unittest.TestCase):
+    def test_parse_args_defaults_phase2_iterations_to_40(self) -> None:
+        with patch("sys.argv", ["prog"]):
+            from profiler_agent.main import parse_args
+
+            args = parse_args()
+
+        self.assertEqual(args.phase2_iterations, 40)
+
     @patch("profiler_agent.main.execute")
     @patch("profiler_agent.main.initialize_runtime_budget")
     @patch("profiler_agent.main.load_target_spec")

@@ -145,16 +145,20 @@ def run_phase2_optimization(
                 "base_candidate_id": state.current_best_candidate_id,
                 "reference_like_candidate_id": state.current_best_reference_candidate_id,
                 "revision_source_preference": (
-                    "previous_candidate_patch_first"
-                    if isinstance(last_feedback, dict)
-                    and isinstance(last_feedback.get("previous_candidate"), dict)
-                    and bool(last_feedback.get("compile_ok"))
-                    and not bool(((last_feedback.get("correctness") or {}).get("passed")))
+                    "current_best_correct_candidate"
+                    if state.current_best_correct_candidate_id is not None
                     else (
-                        "reference_like_candidate"
-                        if state.current_best_reference_candidate_id is not None
-                        and state.current_best_candidate_id != state.current_best_reference_candidate_id
-                        else "base_candidate"
+                        "previous_candidate_patch_first"
+                        if isinstance(last_feedback, dict)
+                        and isinstance(last_feedback.get("previous_candidate"), dict)
+                        and bool(last_feedback.get("compile_ok"))
+                        and not bool(((last_feedback.get("correctness") or {}).get("passed")))
+                        else (
+                            "reference_like_candidate"
+                            if state.current_best_reference_candidate_id is not None
+                            and state.current_best_candidate_id != state.current_best_reference_candidate_id
+                            else "base_candidate"
+                        )
                     )
                 ),
             }
