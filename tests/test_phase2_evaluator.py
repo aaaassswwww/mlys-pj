@@ -60,6 +60,7 @@ class Phase2EvaluatorTests(unittest.TestCase):
         self.assertIn("-shared", command)
         self.assertEqual(command[-1], str(library))
         self.assertIn("/wd4819", command)
+        self.assertIn("-lcublas", command)
 
     def test_build_nvcc_shared_library_command_adds_fpic_on_posix(self) -> None:
         source = Path("candidate") / "optimized_lora.cu"
@@ -70,6 +71,7 @@ class Phase2EvaluatorTests(unittest.TestCase):
         self.assertEqual(command[0], "/usr/local/cuda/bin/nvcc")
         self.assertIn("-shared", command)
         self.assertIn("-fPIC", command)
+        self.assertIn("-lcublas", command)
 
     def test_compile_checked_evaluator_returns_compile_failure_when_nvcc_missing(self) -> None:
         root = Path("tests/.tmp") / f"phase2_eval_{uuid4().hex}"

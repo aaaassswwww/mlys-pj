@@ -355,6 +355,7 @@ def build_nvcc_shared_library_command(source_path: Path, library_path: Path) -> 
         str(source_path),
         "-O3",
         "-std=c++14",
+        "-lcublas",
         "-shared",
         "-o",
         str(library_path),

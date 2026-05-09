@@ -453,6 +453,7 @@ def build_lora_generation_system_prompt() -> str:
         "Avoid variable-length shared-memory arrays and avoid shared-memory declarations whose size depends on runtime variables. "
         "If previous correctness is close but still failing, prioritize correctness over speed and match the reference float32 behavior as closely as possible: prefer simpler kernels, deterministic writes, full initialization before any += accumulation, and avoid unnecessary changes in accumulation precision or reassociation that can drift away from float32 matmul semantics. "
         "When in doubt, prefer a simple two-kernel design: one kernel computes temp = B^T X, and one kernel computes Y = W X + A temp. "
+        "If a correctness-safe implementation can keep the large GEMMs on cuBLAS-backed paths and only customize the smaller rank-16 update or staging logic, prefer that over a fully hand-written end-to-end numeric path. "
         "Avoid shared-memory tiling, fused kernels, warp-specialized tricks, vectorized reinterpret casts, and other aggressive optimizations until correctness is already passing."
     )
 
@@ -543,6 +544,7 @@ def build_lora_generation_user_prompt(
     elif candidate_strategy == "fit_torch_tf32_reference":
         strategy_specific_guidance = [
             "The runtime environment indicates that PyTorch matmul is using a TF32-friendly path.",
+            "Prefer correctness-safe families that keep the large GEMMs on cuBLAS-compatible paths and only customize the smaller rank-16 update or staging logic.",
             "Do not keep reproducing the same naive float32 loop order; that has already been shown to match the naive reference instead of the PyTorch reference.",
             "Do not revert to a fully plain-float32 two-kernel baseline that removes all reduced-precision or tf32-like behavior from every stage; that fallback path has already been explored and is not the target direction.",
             "Do not treat half precision as equivalent to TF32.",
@@ -555,7 +557,7 @@ def build_lora_generation_user_prompt(
             "When base_candidate and reference_like_candidate have different strengths, prefer transplanting one local numeric-path idea from the reference_like_candidate into the base_candidate rather than replacing the entire structure.",
             "Avoid whole-program rewrites that switch the complete candidate from one family to another; preserve the base_candidate skeleton and only patch one stage or one accumulation path at a time.",
             "Prefer changes that alter accumulation grouping or staging in a controlled way, while keeping the ABI and required math unchanged.",
-            "Avoid cuBLAS or cuBLASLt because the current build/load path is not set up for those dependencies.",
+            "cuBLAS-backed GEMM paths are allowed and preferred when they reduce correctness risk for the large matrix products.",
             "If a reference_like_candidate is provided, prefer revising that candidate over the naive-like base_candidate.",
             "Optimize for balanced behavior across all tested hidden dimensions rather than overfitting one dimension to an extremely low diagnostic error.",
             "The immediately previous candidate is your latest concrete patch attempt; unless it catastrophically regressed or failed compilation, prefer editing that candidate in place instead of starting a fresh family.",

@@ -17,10 +17,19 @@ class Phase2GeneratorTests(unittest.TestCase):
         generator = LoraCandidateGenerator(llm_client=None)
         candidate = generator.bootstrap_candidate()
         self.assertEqual(candidate.source, "bootstrap_template")
-        self.assertIn("__global__", candidate.source_code)
+        self.assertIn("#include <cublas_v2.h>", candidate.source_code)
         self.assertIn("launch_optimized_lora", candidate.source_code)
 
-    def test_generate_candidate_uses_llm_payload_when_valid(self) -> None:
+    def test_generate_candidate_uses_deterministic_reference_safe_seed_on_first_iteration(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=1), feedback=None)
+        self.assertEqual(candidate.source, "deterministic_reference_safe")
+        self.assertIn("#include <cublas_v2.h>", candidate.source_code)
+        mock_llm.complete_json.assert_not_called()
+
+    def test_generate_candidate_uses_llm_payload_when_valid_after_seed_iteration(self) -> None:
         mock_llm = Mock()
         mock_llm.is_enabled.return_value = True
         mock_llm.complete_json.return_value = {
@@ -37,7 +46,7 @@ class Phase2GeneratorTests(unittest.TestCase):
             ),
         }
         generator = LoraCandidateGenerator(llm_client=mock_llm)
-        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=1), feedback=None)
+        candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=2), feedback=None)
         self.assertEqual(candidate.candidate_id, "cand-one")
         self.assertEqual(candidate.source, "llm_generated")
         self.assertIn("__global__", candidate.source_code)
@@ -325,11 +334,11 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertEqual(candidate.source, "bootstrap_template")
         self.assertIn("uses_half_intrinsics_without_cuda_fp16_include", candidate.rationale)
 
-    def test_generate_candidate_rejects_cublas_dependency(self) -> None:
+    def test_generate_candidate_allows_cublas_dependency(self) -> None:
         mock_llm = Mock()
         mock_llm.is_enabled.return_value = True
         mock_llm.complete_json.return_value = {
-            "candidate_id": "bad-cublas",
+            "candidate_id": "ok-cublas",
             "source_code": (
                 '#include <cuda_runtime.h>\n'
                 '#include <cublas_v2.h>\n'
@@ -345,8 +354,7 @@ class Phase2GeneratorTests(unittest.TestCase):
         }
         generator = LoraCandidateGenerator(llm_client=mock_llm)
         candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=9), feedback=None)
-        self.assertEqual(candidate.source, "bootstrap_template")
-        self.assertIn("contains_cublas_dependency_not_supported_by_current_build", candidate.rationale)
+        self.assertEqual(candidate.source, "llm_generated")
 
     def test_generate_candidate_rejects_unsupported_tf32_intrinsics(self) -> None:
         mock_llm = Mock()
