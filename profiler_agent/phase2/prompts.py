@@ -330,6 +330,107 @@ def _build_local_mutation_axes(
     return axes
 
 
+def _build_guided_mutation_plans(
+    *,
+    patch_discipline: str,
+    candidate_strategy: str,
+    reference_diagnosis: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if patch_discipline != "strict_local_patch":
+        return []
+    if candidate_strategy not in {"fit_torch_tf32_reference", "fit_torch_reference_over_naive", "match_reference_float32_semantics"}:
+        return []
+    balance_pressure = "normal"
+    if isinstance(reference_diagnosis, dict):
+        spread = reference_diagnosis.get("reference_gap_spread")
+        if isinstance(spread, (int, float)) and float(spread) >= 1e-4:
+            balance_pressure = "high"
+    plans = [
+        {
+            "plan_id": "wx_to_tf32ish",
+            "changes": [{"axis": "wx_numeric_path", "target": "tf32ish"}],
+            "intent": "only move the W*X stage toward a stronger TF32-like path",
+        },
+        {
+            "plan_id": "wx_to_plain_fp32",
+            "changes": [{"axis": "wx_numeric_path", "target": "plain_fp32"}],
+            "intent": "only move the W*X stage toward a plainer float32 path",
+        },
+        {
+            "plan_id": "temp_to_tf32ish",
+            "changes": [{"axis": "temp_numeric_path", "target": "tf32ish"}],
+            "intent": "only move the B^T X stage toward a TF32-like path",
+        },
+        {
+            "plan_id": "temp_to_plain_fp32",
+            "changes": [{"axis": "temp_numeric_path", "target": "plain_fp32"}],
+            "intent": "only move the B^T X stage toward a plainer float32 path",
+        },
+        {
+            "plan_id": "lowrank_to_tf32ish",
+            "changes": [{"axis": "lowrank_numeric_path", "target": "tf32ish"}],
+            "intent": "only move the A*temp stage toward a TF32-like path",
+        },
+        {
+            "plan_id": "lowrank_to_plain_fp32",
+            "changes": [{"axis": "lowrank_numeric_path", "target": "plain_fp32"}],
+            "intent": "only move the A*temp stage toward a plainer float32 path",
+        },
+        {
+            "plan_id": "temp_round_enable",
+            "changes": [{"axis": "temp_store_rounding", "target": "enabled"}],
+            "intent": "only enable explicit temp rounding at the stage boundary",
+        },
+        {
+            "plan_id": "temp_round_disable",
+            "changes": [{"axis": "temp_store_rounding", "target": "disabled"}],
+            "intent": "only disable explicit temp rounding at the stage boundary",
+        },
+        {
+            "plan_id": "accum_operator_fmaf",
+            "changes": [{"axis": "accumulation_operator", "target": "fmaf"}],
+            "intent": "only switch the local accumulation primitive toward fmaf",
+        },
+        {
+            "plan_id": "accum_operator_plain",
+            "changes": [{"axis": "accumulation_operator", "target": "plain_add_mul"}],
+            "intent": "only switch the local accumulation primitive toward plain multiply-add",
+        },
+        {
+            "plan_id": "split_accum",
+            "changes": [{"axis": "accumulation_grouping", "target": "split_accumulator"}],
+            "intent": "only split one reduction into a grouped accumulation path",
+        },
+        {
+            "plan_id": "single_accum",
+            "changes": [{"axis": "accumulation_grouping", "target": "single_accumulator"}],
+            "intent": "only collapse one reduction back to a single accumulator",
+        },
+    ]
+    if balance_pressure == "high":
+        plans.extend(
+            [
+                {
+                    "plan_id": "balance_wx_tf32_temp_plain",
+                    "changes": [
+                        {"axis": "wx_numeric_path", "target": "tf32ish"},
+                        {"axis": "temp_numeric_path", "target": "plain_fp32"},
+                    ],
+                    "intent": "borrow a stronger TF32-like path only for W*X while keeping temp plainer for better cross-dimension balance",
+                },
+                {
+                    "plan_id": "balance_temp_tf32_lowrank_plain",
+                    "changes": [
+                        {"axis": "temp_numeric_path", "target": "tf32ish"},
+                        {"axis": "lowrank_numeric_path", "target": "plain_fp32"},
+                    ],
+                    "intent": "keep the low-rank correction plainer while shifting only temp generation toward TF32-like behavior",
+                },
+            ]
+        )
+    return plans
+
+
 def build_lora_generation_system_prompt() -> str:
     return (
         "You are generating a single-file CUDA C++ candidate for LoRA operator optimization. "
@@ -421,6 +522,16 @@ def build_lora_generation_user_prompt(
         patch_discipline=patch_discipline,
         reference_diagnosis=reference_diagnosis,
     )
+    guided_mutation_plans = _build_guided_mutation_plans(
+        patch_discipline=patch_discipline,
+        candidate_strategy=candidate_strategy,
+        reference_diagnosis=reference_diagnosis,
+    )
+    mutation_execution_mode = "freeform_revision"
+    selected_mutation_plan: dict[str, Any] = {}
+    if guided_mutation_plans:
+        mutation_execution_mode = "guided_local_enumeration"
+        selected_mutation_plan = guided_mutation_plans[(max(0, iteration - 1)) % len(guided_mutation_plans)]
     strategy_specific_guidance: list[str] = []
     if candidate_strategy == "fit_torch_reference_over_naive":
         strategy_specific_guidance = [
@@ -477,12 +588,15 @@ def build_lora_generation_user_prompt(
         "revision_mode": "modify_best_candidate_instead_of_regenerating_from_scratch" if (base_candidate or reference_like_candidate) else "from_scratch",
         "revision_source_preference": revision_source_preference,
         "patch_discipline": patch_discipline,
+        "mutation_execution_mode": mutation_execution_mode,
+        "selected_mutation_plan": selected_mutation_plan,
         "focus_hidden_dim": focus_hidden_dim,
         "balance_priority": balance_priority,
         "reference_diagnosis_summary": reference_diagnosis or {},
         "torch_precision_summary": torch_precision or {},
         "stable_patch_family_summary": stable_patch_family or {},
         "local_mutation_axes": local_mutation_axes,
+        "guided_mutation_plans": guided_mutation_plans,
         "per_spec_feedback": per_spec_feedback,
         "previous_candidate": previous_candidate,
         "base_candidate": base_candidate,
@@ -529,6 +643,8 @@ def build_lora_generation_user_prompt(
                 "if the recent revision history is already a stable patch chain within one candidate family, preserve that family and apply only a local numeric-path patch rather than renaming or re-architecting the candidate",
                 "when patch_discipline is strict_local_patch, do not introduce a new candidate family; keep the same structural skeleton and modify only one narrow behavior such as one stage, one rounding rule, one accumulation grouping, or one temp-handling detail",
                 "when local_mutation_axes are provided, choose one or at most two axes and keep all other numeric behaviors unchanged",
+                "when mutation_execution_mode is guided_local_enumeration, execute the selected_mutation_plan faithfully and do not improvise unrelated changes",
+                "in guided_local_enumeration mode, preserve the previous candidate skeleton and translate only the listed axis changes into code edits",
                 "prefer a mutation that can be described as a narrow toggle on the previous candidate rather than a fresh rewrite",
                 "treat the preferred revision source candidate as the starting point and revise it instead of discarding it",
                 "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
