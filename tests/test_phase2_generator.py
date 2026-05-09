@@ -32,6 +32,31 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn("cublasGemmEx", candidate.source_code)
         mock_llm.complete_json.assert_not_called()
 
+    def test_generate_candidate_switches_to_deterministic_speedup_family_after_correctness(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        state = Phase2OptimizerState(
+            iteration=16,
+            current_best_candidate_id="all-gemm-cublas-safe-tf32-v13",
+            current_best_correct_candidate_id="all-gemm-cublas-safe-tf32-v13",
+            current_best_source_code=(
+                "#include <cuda_runtime.h>\n"
+                "#include <cublas_v2.h>\n"
+                'extern "C" void launch_optimized_lora(const float* W, const float* X, const float* A, const float* B, float* Y, int d, int n, cudaStream_t stream) {}\n'
+            ),
+            current_best_source="deterministic_reference_safe",
+        )
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(
+            state=state,
+            feedback={"correctness": {"passed": True, "rel_l2_err": 0.0, "max_abs_err": 0.0}},
+        )
+        self.assertEqual(candidate.source, "deterministic_speedup_family")
+        self.assertIn("cublas-rank16-update-", candidate.candidate_id)
+        self.assertIn("rank16_add_scalar_kernel", candidate.source_code)
+        self.assertNotIn("float* delta", candidate.source_code)
+        mock_llm.complete_json.assert_not_called()
+
     def test_generate_candidate_uses_llm_payload_when_valid_after_seed_iteration(self) -> None:
         mock_llm = Mock()
         mock_llm.is_enabled.return_value = True

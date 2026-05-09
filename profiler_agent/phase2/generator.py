@@ -412,6 +412,251 @@ def build_reference_safe_cublas_source(*, use_tf32_math: bool) -> str:
     )
 
 
+def build_cublas_rank16_update_source(
+    *,
+    block_size: int,
+    vector_width: int,
+    shape_dispatch: bool,
+    use_tf32_math: bool,
+) -> str:
+    tf32_math_block = (
+        "#if defined(CUBLAS_TF32_TENSOR_OP_MATH)\n"
+        "    cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH);\n"
+        "#endif\n"
+        if use_tf32_math
+        else
+        "#if defined(CUBLAS_DEFAULT_MATH)\n"
+        "    cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH);\n"
+        "#endif\n"
+    )
+    compute_type = "CUBLAS_COMPUTE_32F_FAST_TF32" if use_tf32_math else "CUBLAS_COMPUTE_32F"
+    algo = "CUBLAS_GEMM_DEFAULT_TENSOR_OP" if use_tf32_math else "CUBLAS_GEMM_DEFAULT"
+    shape_dispatch_flag = "1" if shape_dispatch else "0"
+    return (
+        "#include <cuda_runtime.h>\n"
+        "#include <cublas_v2.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "namespace {\n"
+        "constexpr int RANK = 16;\n"
+        f"constexpr int LORA_BLOCK_SIZE = {block_size};\n"
+        f"constexpr int LORA_VECTOR_WIDTH = {vector_width};\n"
+        f"constexpr int LORA_SHAPE_DISPATCH = {shape_dispatch_flag};\n"
+        "thread_local cublasHandle_t tls_handle = nullptr;\n"
+        "thread_local cudaStream_t tls_stream = nullptr;\n"
+        "thread_local float* tls_temp = nullptr;\n"
+        "thread_local size_t tls_temp_capacity = 0;\n"
+        "\n"
+        "inline cublasStatus_t gemm_row_major(\n"
+        "    cublasHandle_t handle,\n"
+        "    int m,\n"
+        "    int n,\n"
+        "    int k,\n"
+        "    const float* A,\n"
+        "    const float* B,\n"
+        "    float* C) {\n"
+        "    const float alpha = 1.0f;\n"
+        "    const float beta = 0.0f;\n"
+        "    return cublasGemmEx(\n"
+        "        handle,\n"
+        "        CUBLAS_OP_N,\n"
+        "        CUBLAS_OP_N,\n"
+        "        n,\n"
+        "        m,\n"
+        "        k,\n"
+        "        &alpha,\n"
+        "        B,\n"
+        "        CUDA_R_32F,\n"
+        "        n,\n"
+        "        A,\n"
+        "        CUDA_R_32F,\n"
+        "        k,\n"
+        "        &beta,\n"
+        "        C,\n"
+        "        CUDA_R_32F,\n"
+        "        n,\n"
+        f"        {compute_type},\n"
+        f"        {algo});\n"
+        "}\n"
+        "\n"
+        "inline cublasStatus_t gemm_row_major_a_transpose_b(\n"
+        "    cublasHandle_t handle,\n"
+        "    int a_rows,\n"
+        "    int a_cols,\n"
+        "    int n,\n"
+        "    const float* A,\n"
+        "    const float* B,\n"
+        "    float* C) {\n"
+        "    const float alpha = 1.0f;\n"
+        "    const float beta = 0.0f;\n"
+        "    return cublasGemmEx(\n"
+        "        handle,\n"
+        "        CUBLAS_OP_N,\n"
+        "        CUBLAS_OP_T,\n"
+        "        n,\n"
+        "        a_cols,\n"
+        "        a_rows,\n"
+        "        &alpha,\n"
+        "        B,\n"
+        "        CUDA_R_32F,\n"
+        "        n,\n"
+        "        A,\n"
+        "        CUDA_R_32F,\n"
+        "        a_cols,\n"
+        "        &beta,\n"
+        "        C,\n"
+        "        CUDA_R_32F,\n"
+        "        n,\n"
+        f"        {compute_type},\n"
+        f"        {algo});\n"
+        "}\n"
+        "\n"
+        "__global__ void rank16_add_scalar_kernel(\n"
+        "    float* __restrict__ y,\n"
+        "    const float* __restrict__ A,\n"
+        "    const float* __restrict__ T,\n"
+        "    int d,\n"
+        "    int n) {\n"
+        "    const int64_t total = static_cast<int64_t>(d) * static_cast<int64_t>(n);\n"
+        "    const int64_t stride = static_cast<int64_t>(blockDim.x) * static_cast<int64_t>(gridDim.x);\n"
+        "    for (int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x; idx < total; idx += stride) {\n"
+        "        const int row = static_cast<int>(idx / n);\n"
+        "        const int col = static_cast<int>(idx - static_cast<int64_t>(row) * n);\n"
+        "        const float* a_row = A + static_cast<int64_t>(row) * RANK;\n"
+        "        float acc = 0.0f;\n"
+        "#pragma unroll\n"
+        "        for (int k = 0; k < RANK; ++k) {\n"
+        "            acc = fmaf(a_row[k], T[static_cast<int64_t>(k) * n + col], acc);\n"
+        "        }\n"
+        "        y[idx] += acc;\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "__global__ void rank16_add_vec4_kernel(\n"
+        "    float* __restrict__ y,\n"
+        "    const float* __restrict__ A,\n"
+        "    const float* __restrict__ T,\n"
+        "    int d,\n"
+        "    int n) {\n"
+        "    const int vec_cols = n / 4;\n"
+        "    const int64_t total = static_cast<int64_t>(d) * static_cast<int64_t>(vec_cols);\n"
+        "    const int64_t stride = static_cast<int64_t>(blockDim.x) * static_cast<int64_t>(gridDim.x);\n"
+        "    for (int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x; idx < total; idx += stride) {\n"
+        "        const int row = static_cast<int>(idx / vec_cols);\n"
+        "        const int col = static_cast<int>(idx - static_cast<int64_t>(row) * vec_cols) * 4;\n"
+        "        const float* a_row = A + static_cast<int64_t>(row) * RANK;\n"
+        "        float4 acc = make_float4(0.0f, 0.0f, 0.0f, 0.0f);\n"
+        "#pragma unroll\n"
+        "        for (int k = 0; k < RANK; ++k) {\n"
+        "            const float aval = a_row[k];\n"
+        "            const float4 tv = *reinterpret_cast<const float4*>(T + static_cast<int64_t>(k) * n + col);\n"
+        "            acc.x = fmaf(aval, tv.x, acc.x);\n"
+        "            acc.y = fmaf(aval, tv.y, acc.y);\n"
+        "            acc.z = fmaf(aval, tv.z, acc.z);\n"
+        "            acc.w = fmaf(aval, tv.w, acc.w);\n"
+        "        }\n"
+        "        float4 yv = *reinterpret_cast<float4*>(y + static_cast<int64_t>(row) * n + col);\n"
+        "        yv.x += acc.x;\n"
+        "        yv.y += acc.y;\n"
+        "        yv.z += acc.z;\n"
+        "        yv.w += acc.w;\n"
+        "        *reinterpret_cast<float4*>(y + static_cast<int64_t>(row) * n + col) = yv;\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "inline bool ensure_handle(cudaStream_t stream) {\n"
+        "    if (tls_handle == nullptr) {\n"
+        "        if (cublasCreate(&tls_handle) != CUBLAS_STATUS_SUCCESS) {\n"
+        "            tls_handle = nullptr;\n"
+        "            return false;\n"
+        "        }\n"
+        f"{tf32_math_block}"
+        "    }\n"
+        "    if (tls_stream != stream) {\n"
+        "        if (cublasSetStream(tls_handle, stream) != CUBLAS_STATUS_SUCCESS) {\n"
+        "            return false;\n"
+        "        }\n"
+        "        tls_stream = stream;\n"
+        "    }\n"
+        "    return true;\n"
+        "}\n"
+        "\n"
+        "inline bool ensure_temp(size_t required_elems) {\n"
+        "    if (required_elems <= tls_temp_capacity && tls_temp != nullptr) {\n"
+        "        return true;\n"
+        "    }\n"
+        "    if (tls_temp != nullptr) {\n"
+        "        cudaFree(tls_temp);\n"
+        "        tls_temp = nullptr;\n"
+        "        tls_temp_capacity = 0;\n"
+        "    }\n"
+        "    if (cudaMalloc(reinterpret_cast<void**>(&tls_temp), required_elems * sizeof(float)) != cudaSuccess) {\n"
+        "        tls_temp = nullptr;\n"
+        "        tls_temp_capacity = 0;\n"
+        "        return false;\n"
+        "    }\n"
+        "    tls_temp_capacity = required_elems;\n"
+        "    return true;\n"
+        "}\n"
+        "\n"
+        "inline void launch_rank16_add(float* y, const float* A, const float* T, int d, int n, cudaStream_t stream) {\n"
+        "    int threads = LORA_BLOCK_SIZE;\n"
+        "    if (LORA_SHAPE_DISPATCH) {\n"
+        "        if (d <= 3840) {\n"
+        "            threads = 128;\n"
+        "        } else if (d <= 4352) {\n"
+        "            threads = 256;\n"
+        "        } else {\n"
+        "            threads = 512;\n"
+        "        }\n"
+        "    }\n"
+        "    if (LORA_VECTOR_WIDTH == 4 && (n % 4 == 0)) {\n"
+        "        const int64_t total = static_cast<int64_t>(d) * static_cast<int64_t>(n / 4);\n"
+        "        const int blocks = static_cast<int>((total + threads - 1) / threads);\n"
+        "        rank16_add_vec4_kernel<<<blocks, threads, 0, stream>>>(y, A, T, d, n);\n"
+        "    } else {\n"
+        "        const int64_t total = static_cast<int64_t>(d) * static_cast<int64_t>(n);\n"
+        "        const int blocks = static_cast<int>((total + threads - 1) / threads);\n"
+        "        rank16_add_scalar_kernel<<<blocks, threads, 0, stream>>>(y, A, T, d, n);\n"
+        "    }\n"
+        "}\n"
+        "}  // namespace\n"
+        "\n"
+        "extern \"C\" void launch_optimized_lora(\n"
+        "    const float* W,\n"
+        "    const float* X,\n"
+        "    const float* A,\n"
+        "    const float* B,\n"
+        "    float* Y,\n"
+        "    int d,\n"
+        "    int n,\n"
+        "    cudaStream_t stream) {\n"
+        "    if (W == nullptr || X == nullptr || A == nullptr || B == nullptr || Y == nullptr) {\n"
+        "        return;\n"
+        "    }\n"
+        "    if (d <= 0 || n <= 0) {\n"
+        "        return;\n"
+        "    }\n"
+        "    if (!ensure_handle(stream)) {\n"
+        "        return;\n"
+        "    }\n"
+        "    const size_t temp_elems = static_cast<size_t>(RANK) * static_cast<size_t>(n);\n"
+        "    if (!ensure_temp(temp_elems)) {\n"
+        "        return;\n"
+        "    }\n"
+        "    cublasStatus_t st = gemm_row_major(tls_handle, d, n, d, W, X, Y);\n"
+        "    if (st != CUBLAS_STATUS_SUCCESS) {\n"
+        "        return;\n"
+        "    }\n"
+        "    st = gemm_row_major_a_transpose_b(tls_handle, d, RANK, n, B, X, tls_temp);\n"
+        "    if (st != CUBLAS_STATUS_SUCCESS) {\n"
+        "        return;\n"
+        "    }\n"
+        "    launch_rank16_add(Y, A, tls_temp, d, n, stream);\n"
+        "}\n"
+    )
+
+
 def _is_cublas_candidate_signature(*, candidate_id: str | None = None, source_code: str | None = None) -> bool:
     if isinstance(candidate_id, str) and "cublas" in candidate_id.lower():
         return True
@@ -420,6 +665,58 @@ def _is_cublas_candidate_signature(*, candidate_id: str | None = None, source_co
         if "#include <cublas_v2.h>" in lowered or "cublas" in lowered:
             return True
     return False
+
+
+def _speedup_rank16_search_space() -> list[dict[str, Any]]:
+    return [
+        {"name": "rank16-scalar-b128", "block_size": 128, "vector_width": 1, "shape_dispatch": False},
+        {"name": "rank16-scalar-b256", "block_size": 256, "vector_width": 1, "shape_dispatch": False},
+        {"name": "rank16-scalar-b512", "block_size": 512, "vector_width": 1, "shape_dispatch": False},
+        {"name": "rank16-vec4-b128", "block_size": 128, "vector_width": 4, "shape_dispatch": False},
+        {"name": "rank16-vec4-b256", "block_size": 256, "vector_width": 4, "shape_dispatch": False},
+        {"name": "rank16-vec4-b512", "block_size": 512, "vector_width": 4, "shape_dispatch": False},
+        {"name": "rank16-shape-scalar", "block_size": 256, "vector_width": 1, "shape_dispatch": True},
+        {"name": "rank16-shape-vec4", "block_size": 256, "vector_width": 4, "shape_dispatch": True},
+    ]
+
+
+def _build_speedup_rank16_candidate(*, state: Phase2OptimizerState, iteration: int) -> GeneratedCandidate:
+    prior_speedup_candidates = [
+        item
+        for item in state.llm_revision_history
+        if isinstance(item, dict)
+        and isinstance(item.get("candidate_id"), str)
+        and "cublas-rank16-update" in str(item.get("candidate_id"))
+    ]
+    configs = _speedup_rank16_search_space()
+    config = configs[len(prior_speedup_candidates) % len(configs)]
+    candidate_id = f"cublas-rank16-update-{config['name']}-v{iteration:02d}"
+    return GeneratedCandidate(
+        candidate_id=candidate_id,
+        source_code=build_cublas_rank16_update_source(
+            block_size=int(config["block_size"]),
+            vector_width=int(config["vector_width"]),
+            shape_dispatch=bool(config["shape_dispatch"]),
+            use_tf32_math=True,
+        ),
+        rationale=(
+            "deterministic speedup family candidate: keep W@X and B^T@X on cuBLAS TF32 GEMMs, "
+            "replace A@temp plus Y+=delta with a custom rank-16 update kernel, and enumerate only launch/vectorization settings"
+        ),
+        source="deterministic_speedup_family",
+    )
+
+
+def _should_force_speedup_rank16_family(
+    *,
+    state: Phase2OptimizerState,
+) -> bool:
+    if state.current_best_correct_candidate_id is None:
+        return False
+    return _is_cublas_candidate_signature(
+        candidate_id=state.current_best_correct_candidate_id,
+        source_code=state.current_best_source_code,
+    )
 
 
 def _build_reference_safe_cublas_candidate(*, iteration: int) -> GeneratedCandidate:
@@ -604,6 +901,16 @@ class LoraCandidateGenerator:
                 iteration=state.iteration,
                 payload=None,
                 fallback_reason="llm_disabled",
+                candidate=candidate,
+            )
+            return candidate
+
+        if _should_force_speedup_rank16_family(state=state):
+            candidate = _build_speedup_rank16_candidate(state=state, iteration=state.iteration)
+            self._write_generation_debug(
+                iteration=state.iteration,
+                payload={"mode": "deterministic_speedup_rank16_family"},
+                fallback_reason="deterministic_speedup_rank16_family_locked",
                 candidate=candidate,
             )
             return candidate
