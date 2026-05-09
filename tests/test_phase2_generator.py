@@ -18,6 +18,8 @@ class Phase2GeneratorTests(unittest.TestCase):
         candidate = generator.bootstrap_candidate()
         self.assertEqual(candidate.source, "bootstrap_template")
         self.assertIn("#include <cublas_v2.h>", candidate.source_code)
+        self.assertIn("cublasGemmEx", candidate.source_code)
+        self.assertIn("CUBLAS_COMPUTE_32F_FAST_TF32", candidate.source_code)
         self.assertIn("launch_optimized_lora", candidate.source_code)
 
     def test_generate_candidate_uses_deterministic_reference_safe_seed_on_first_iteration(self) -> None:
@@ -27,6 +29,7 @@ class Phase2GeneratorTests(unittest.TestCase):
         candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=1), feedback=None)
         self.assertEqual(candidate.source, "deterministic_reference_safe")
         self.assertIn("#include <cublas_v2.h>", candidate.source_code)
+        self.assertIn("cublasGemmEx", candidate.source_code)
         mock_llm.complete_json.assert_not_called()
 
     def test_generate_candidate_uses_llm_payload_when_valid_after_seed_iteration(self) -> None:
