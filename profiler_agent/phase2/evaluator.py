@@ -482,6 +482,11 @@ def _torch_extension_module_name(candidate_id: str) -> str:
     return cleaned
 
 
+def _looks_like_direct_torch_extension_source(source_code: str) -> bool:
+    normalized = source_code or ""
+    return "PYBIND11_MODULE(TORCH_EXTENSION_NAME" in normalized and "forward(" in normalized
+
+
 def _torch_extension_wrapper_source() -> str:
     return (
         "#include <torch/extension.h>\n"
@@ -567,16 +572,19 @@ def build_torch_extension_candidate_runner(
             except Exception as exc:
                 raise RuntimeError(f"torch_extension_unavailable:{type(exc).__name__}:{exc}") from exc
 
-            wrapper_path = paths.source_path.parent / wrapper_filename
-            wrapper_path.write_text(_torch_extension_wrapper_source(), encoding="utf-8")
             build_dir = paths.source_path.parent / "torch_extension_build"
             build_dir.mkdir(parents=True, exist_ok=True)
             source_hash = hashlib.sha256(paths.source_path.read_bytes()).hexdigest()[:12]
             module_name = f"{_torch_extension_module_name(candidate.candidate_id)}_{source_hash}"
+            sources = [str(paths.source_path)]
+            if not _looks_like_direct_torch_extension_source(candidate.source_code):
+                wrapper_path = paths.source_path.parent / wrapper_filename
+                wrapper_path.write_text(_torch_extension_wrapper_source(), encoding="utf-8")
+                sources = [str(wrapper_path), str(paths.source_path)]
             try:
                 module = load(
                     name=module_name,
-                    sources=[str(wrapper_path), str(paths.source_path)],
+                    sources=sources,
                     extra_cflags=["-O3", "-std=c++17"],
                     extra_cuda_cflags=["-O3", "-std=c++17"],
                     build_directory=str(build_dir),

@@ -23,6 +23,19 @@ _ENTRYPOINT_SIGNATURE_RE = re.compile(
     r'\)',
     flags=re.DOTALL,
 )
+_FORWARD_SIGNATURE_RE = re.compile(
+    r"torch::Tensor\s+forward\s*\(\s*"
+    r"torch::Tensor\s+W\s*,\s*"
+    r"torch::Tensor\s+X\s*,\s*"
+    r"torch::Tensor\s+A\s*,\s*"
+    r"torch::Tensor\s+B\s*"
+    r"\)",
+    flags=re.DOTALL,
+)
+_PYBIND11_MODULE_RE = re.compile(
+    r"PYBIND11_MODULE\s*\(\s*TORCH_EXTENSION_NAME\s*,\s*m\s*\)",
+    flags=re.DOTALL,
+)
 _SHARED_RUNTIME_RANK_RE = re.compile(
     r'(?:__shared__|__attribute__\s*\(\(\s*shared\s*\)\))\s+[^;\n\[]+\[[^\]\n]*\br\b[^\]\n]*\]',
     flags=re.IGNORECASE,
@@ -103,10 +116,15 @@ def _validate_source_code(source_code: str) -> tuple[bool, str]:
         return False, "contains_forbidden_host_side_test_harness"
     if re.search(r"\bglobal__\b", source_code):
         return False, "contains_malformed_global_qualifier"
-    if not _ENTRYPOINT_SIGNATURE_RE.search(source_code):
-        return False, "missing_or_mismatched_launch_optimized_lora_signature"
-    if re.search(r"launch_optimized_lora\s*\([^)]*\bint\s+r\b", source_code):
-        return False, "launch_optimized_lora_must_not_accept_runtime_rank_parameter"
+    has_launch = "launch_optimized_lora" in source_code
+    has_direct_forward = _FORWARD_SIGNATURE_RE.search(source_code) and _PYBIND11_MODULE_RE.search(source_code)
+    if has_launch:
+        if not _ENTRYPOINT_SIGNATURE_RE.search(source_code):
+            return False, "missing_or_mismatched_launch_optimized_lora_signature"
+        if re.search(r"launch_optimized_lora\s*\([^)]*\bint\s+r\b", source_code):
+            return False, "launch_optimized_lora_must_not_accept_runtime_rank_parameter"
+    elif not has_direct_forward:
+        return False, "missing_supported_extension_entrypoint"
     if _SHARED_RUNTIME_RANK_RE.search(source_code):
         return False, "contains_runtime_rank_sized_shared_array"
     if _UNSUPPORTED_TF32_INTRINSIC_RE.search(source_code):
@@ -295,40 +313,38 @@ def build_reference_safe_aten_source(
     return (
         "#include <torch/extension.h>\n"
         "#include <ATen/ATen.h>\n"
-        "#include <cuda_runtime.h>\n"
         "\n"
         "namespace {\n"
         "constexpr int RANK = 16;\n"
         "\n"
-        "inline torch::Tensor view_cuda_f32(const float* ptr, int rows, int cols) {\n"
-        "    auto opts = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);\n"
-        "    return torch::from_blob(const_cast<float*>(ptr), {rows, cols}, opts);\n"
-        "}\n"
         "}  // namespace\n"
         "\n"
-        "extern \"C\" void launch_optimized_lora(\n"
-        "    const float* W,\n"
-        "    const float* X,\n"
-        "    const float* A,\n"
-        "    const float* B,\n"
-        "    float* Y,\n"
-        "    int d,\n"
-        "    int n,\n"
-        "    cudaStream_t stream) {\n"
-        "    (void)stream;\n"
-        "    if (W == nullptr || X == nullptr || A == nullptr || B == nullptr || Y == nullptr) {\n"
-        "        return;\n"
-        "    }\n"
-        "    if (d <= 0 || n <= 0) {\n"
-        "        return;\n"
-        "    }\n"
-        "    auto W_t = view_cuda_f32(W, d, d);\n"
-        "    auto X_t = view_cuda_f32(X, d, n);\n"
-        "    auto A_t = view_cuda_f32(A, d, RANK);\n"
-        "    auto B_t = view_cuda_f32(B, d, RANK);\n"
-        "    auto Y_t = view_cuda_f32(Y, d, n);\n"
+        "torch::Tensor forward(torch::Tensor W, torch::Tensor X, torch::Tensor A, torch::Tensor B) {\n"
+        "    TORCH_CHECK(W.is_cuda(), \"W must be CUDA\");\n"
+        "    TORCH_CHECK(X.is_cuda(), \"X must be CUDA\");\n"
+        "    TORCH_CHECK(A.is_cuda(), \"A must be CUDA\");\n"
+        "    TORCH_CHECK(B.is_cuda(), \"B must be CUDA\");\n"
+        "    TORCH_CHECK(W.scalar_type() == at::kFloat, \"W must be float32\");\n"
+        "    TORCH_CHECK(X.scalar_type() == at::kFloat, \"X must be float32\");\n"
+        "    TORCH_CHECK(A.scalar_type() == at::kFloat, \"A must be float32\");\n"
+        "    TORCH_CHECK(B.scalar_type() == at::kFloat, \"B must be float32\");\n"
+        "    TORCH_CHECK(W.dim() == 2 && X.dim() == 2 && A.dim() == 2 && B.dim() == 2, \"all inputs must be rank-2\");\n"
+        "    TORCH_CHECK(W.size(0) == W.size(1), \"W must be square\");\n"
+        "    TORCH_CHECK(X.size(0) == W.size(1), \"X rows must match W columns\");\n"
+        "    TORCH_CHECK(A.size(0) == W.size(0) && A.size(1) == RANK, \"A must be [d, 16]\");\n"
+        "    TORCH_CHECK(B.size(0) == W.size(0) && B.size(1) == RANK, \"B must be [d, 16]\");\n"
+        "    auto W_t = W.contiguous();\n"
+        "    auto X_t = X.contiguous();\n"
+        "    auto A_t = A.contiguous();\n"
+        "    auto B_t = B.contiguous();\n"
+        "    auto Y_t = torch::empty({W_t.size(0), X_t.size(1)}, W_t.options());\n"
         f"    auto temp = torch::matmul({bt_expr}, X_t);\n"
         f"{addmm_block}"
+        "    return Y_t;\n"
+        "}\n"
+        "\n"
+        "PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {\n"
+        "    m.def(\"forward\", &forward, \"LoRA forward\");\n"
         "}\n"
     )
 
