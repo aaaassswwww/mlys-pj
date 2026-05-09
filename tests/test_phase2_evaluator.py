@@ -133,6 +133,40 @@ class Phase2EvaluatorTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_compile_checked_evaluator_defers_aten_candidate_to_runtime(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_eval_aten_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            runtime = Mock()
+            runtime.return_value = CandidateEvaluation(
+                candidate_id="aten-cand",
+                correctness=CorrectnessResult(passed=True, max_abs_err=0.0, rel_l2_err=0.0, rtol=1e-4, atol=1e-4),
+                student_benchmark=empty_benchmark_result(),
+                reference_benchmark=empty_benchmark_result(),
+                speedup=1.0,
+                notes=["runtime_connected"],
+            )
+            evaluator = build_compile_checked_candidate_evaluator(root_dir=root, runtime_evaluator=runtime)
+            candidate = GeneratedCandidate(
+                candidate_id="aten-cand",
+                source_code="#include <torch/extension.h>\ntorch::Tensor forward();\n",
+            )
+
+            with patch("profiler_agent.phase2.evaluator.subprocess.run") as mocked_run:
+                evaluation = evaluator(candidate)
+
+            mocked_run.assert_not_called()
+            self.assertTrue(runtime.called)
+            self.assertEqual(evaluation.notes, ["runtime_connected"])
+            self.assertIsNotNone(evaluation.compilation)
+            self.assertTrue(evaluation.compilation.ok)
+            self.assertEqual(
+                evaluation.compilation.stderr_tail,
+                "deferred_to_torch_cpp_extension_runtime",
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_harness_runtime_evaluator_passes_correct_candidate_across_specs(self) -> None:
         specs = [
             LoraProblemSpec(hidden_dim=8, output_dim=4, num_tokens=3, device="cpu"),

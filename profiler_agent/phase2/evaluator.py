@@ -525,6 +525,19 @@ def _torch_extension_wrapper_source() -> str:
     )
 
 
+def _looks_like_torch_extension_candidate(candidate: GeneratedCandidate) -> bool:
+    source = candidate.source_code or ""
+    markers = (
+        "#include <torch/extension.h>",
+        "torch::Tensor",
+        "torch::matmul(",
+        "torch::addmm(",
+        "torch::addmm_out(",
+        "addmm_(",
+    )
+    return any(marker in source for marker in markers)
+
+
 def build_torch_extension_candidate_runner(
     *,
     wrapper_filename: str = "torch_extension_wrapper.cpp",
@@ -861,6 +874,52 @@ def build_compile_checked_candidate_evaluator(
     def evaluator(candidate: GeneratedCandidate) -> CandidateEvaluation:
         paths = build_candidate_artifact_paths(root_dir, candidate.candidate_id)
         write_candidate_source(paths, candidate)
+        if _looks_like_torch_extension_candidate(candidate):
+            deferred_compilation = CompilationResult(
+                ok=True,
+                command=["torch.utils.cpp_extension.load", str(paths.source_path)],
+                returncode=0,
+                stdout_tail="",
+                stderr_tail="deferred_to_torch_cpp_extension_runtime",
+                output_path=str(paths.library_path),
+            )
+            deferred_load = LoadResult(
+                ok=True,
+                library_path=str(paths.library_path),
+                symbol_name=_ENTRYPOINT_SYMBOL,
+                error="deferred_to_torch_cpp_extension_runtime",
+            )
+            if runtime_evaluator is None:
+                return CandidateEvaluation(
+                    candidate_id=candidate.candidate_id,
+                    correctness=CorrectnessResult(
+                        passed=False,
+                        max_abs_err=0.0,
+                        rel_l2_err=0.0,
+                        rtol=1e-4,
+                        atol=1e-4,
+                    ),
+                    student_benchmark=empty_benchmark_result(),
+                    reference_benchmark=empty_benchmark_result(),
+                    speedup=0.0,
+                    notes=["runtime_evaluator_not_connected_yet"],
+                    per_spec=[],
+                    compilation=deferred_compilation,
+                    load=deferred_load,
+                )
+            evaluation = runtime_evaluator(candidate, paths, deferred_load)
+            return CandidateEvaluation(
+                candidate_id=evaluation.candidate_id,
+                correctness=evaluation.correctness,
+                student_benchmark=evaluation.student_benchmark,
+                reference_benchmark=evaluation.reference_benchmark,
+                speedup=evaluation.speedup,
+                notes=list(evaluation.notes),
+                per_spec=list(evaluation.per_spec),
+                compilation=deferred_compilation,
+                load=deferred_load,
+            )
+
         compilation = compile_candidate_source(paths.source_path, paths.library_path)
         if not compilation.ok:
             return CandidateEvaluation(
