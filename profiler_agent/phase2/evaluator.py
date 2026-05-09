@@ -577,8 +577,8 @@ def build_torch_extension_candidate_runner(
                 module = load(
                     name=module_name,
                     sources=[str(wrapper_path), str(paths.source_path)],
-                    extra_cflags=["-O3"],
-                    extra_cuda_cflags=["-O3", "-std=c++14"],
+                    extra_cflags=["-O3", "-std=c++17"],
+                    extra_cuda_cflags=["-O3", "-std=c++17"],
                     build_directory=str(build_dir),
                     verbose=False,
                 )
