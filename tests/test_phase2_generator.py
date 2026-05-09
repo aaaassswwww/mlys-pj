@@ -91,6 +91,116 @@ class Phase2GeneratorTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_generate_candidate_prefers_programmatic_local_enumeration_on_stable_patch_chain(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        state = Phase2OptimizerState(
+            iteration=14,
+            llm_revision_history=[
+                {
+                    "iteration": 11,
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v11",
+                    "generation_context": {"revision_source_preference": "previous_candidate_patch_first"},
+                },
+                {
+                    "iteration": 12,
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v12",
+                    "generation_context": {"revision_source_preference": "previous_candidate_patch_first"},
+                },
+                {
+                    "iteration": 13,
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v13",
+                    "generation_context": {"revision_source_preference": "previous_candidate_patch_first"},
+                },
+            ],
+        )
+        source = (
+            '#include <cuda_runtime.h>\n'
+            'extern "C" void launch_optimized_lora('
+            'const float* W, const float* X, const float* A, const float* B, '
+            'float* Y, int d, int n, cudaStream_t stream) {\n'
+            '  float sum = 0.0f;\n'
+            '  sum = fmaf(W[0], X[0], sum);\n'
+            '}\n'
+        )
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(
+            state=state,
+            feedback={
+                "compile_ok": True,
+                "correctness": {"passed": False, "rel_l2_err": 3.0e-4, "max_abs_err": 0.5},
+                "previous_candidate": {
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v13",
+                    "rationale": "latest patch",
+                    "source": "llm_generated",
+                    "source_code": source,
+                },
+            },
+        )
+        self.assertEqual(candidate.source, "programmatic_mutation")
+        self.assertIn("programmatic_local_enumeration", candidate.rationale)
+        mock_llm.complete_json.assert_not_called()
+
+    def test_generate_candidate_falls_back_to_llm_when_programmatic_mutation_not_applicable(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "cand-fallback",
+            "rationale": "llm fallback",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '__global__ void k() {}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
+        }
+        state = Phase2OptimizerState(
+            iteration=14,
+            llm_revision_history=[
+                {
+                    "iteration": 11,
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v11",
+                    "generation_context": {"revision_source_preference": "previous_candidate_patch_first"},
+                },
+                {
+                    "iteration": 12,
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v12",
+                    "generation_context": {"revision_source_preference": "previous_candidate_patch_first"},
+                },
+                {
+                    "iteration": 13,
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v13",
+                    "generation_context": {"revision_source_preference": "previous_candidate_patch_first"},
+                },
+            ],
+        )
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(
+            state=state,
+            feedback={
+                "compile_ok": True,
+                "correctness": {"passed": False, "rel_l2_err": 3.0e-4, "max_abs_err": 0.5},
+                "previous_candidate": {
+                    "candidate_id": "simple_two_kernel_tf32_stage_selective_v13",
+                    "rationale": "latest patch",
+                    "source": "llm_generated",
+                    "source_code": (
+                        '#include <cuda_runtime.h>\n'
+                        'extern "C" void launch_optimized_lora('
+                        'const float* W, const float* X, const float* A, const float* B, '
+                        'float* Y, int d, int n, cudaStream_t stream) {\n'
+                        '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                        '}\n'
+                    ),
+                },
+            },
+        )
+        self.assertEqual(candidate.source, "llm_generated")
+        mock_llm.complete_json.assert_called_once()
+
     def test_generate_candidate_rejects_mismatched_entrypoint_signature(self) -> None:
         mock_llm = Mock()
         mock_llm.is_enabled.return_value = True

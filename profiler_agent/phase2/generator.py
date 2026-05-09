@@ -36,6 +36,35 @@ _UNSUPPORTED_TF32_INTRINSIC_RE = re.compile(
     r"__(?:float2tf32|nv_float2tf32|nv_tf32_to_float)\s*\(",
     flags=re.IGNORECASE,
 )
+_CANDIDATE_FAMILY_SUFFIX_RE = re.compile(r"(?:[_-]?v\d+|[_-]rev\d+|[_-]fix\d+)$", flags=re.IGNORECASE)
+_FMA_SELF_ACCUM_RE = re.compile(
+    r"(?P<indent>\s*)(?P<acc>[A-Za-z_]\w*)\s*=\s*fmaf\(\s*(?P<a>[^,;\n]+?)\s*,\s*(?P<b>[^,;\n]+?)\s*,\s*(?P=acc)\s*\)\s*;",
+    flags=re.MULTILINE,
+)
+_PLAIN_SELF_ACCUM_RE = re.compile(
+    r"(?P<indent>\s*)(?P<acc>[A-Za-z_]\w*)\s*\+=\s*(?P<a>[^;=\n]+?)\s*\*\s*(?P<b>[^;=\n]+?)\s*;",
+    flags=re.MULTILINE,
+)
+_TEMP_ASSIGN_ROUNDED_RE = re.compile(
+    r"(?P<lhs>\b(?:temp|T)\s*\[[^\]]+\]\s*=\s*)tf32_round_float\(\s*(?P<rhs>[A-Za-z_]\w*)\s*\)\s*;",
+    flags=re.MULTILINE,
+)
+_TEMP_ASSIGN_PLAIN_RE = re.compile(
+    r"(?P<lhs>\b(?:temp|T)\s*\[[^\]]+\]\s*=\s*)(?P<rhs>[A-Za-z_]\w*)\s*;",
+    flags=re.MULTILINE,
+)
+_TF32_HELPER_RET_RE = re.compile(
+    r"return\s+tf32_round_float\(\s*a\s*\)\s*\*\s*tf32_round_float\(\s*b\s*\)\s*;",
+    flags=re.MULTILINE,
+)
+_PLAIN_HELPER_RET_RE = re.compile(
+    r"return\s+a\s*\*\s*b\s*;",
+    flags=re.MULTILINE,
+)
+_HALFMUL_EXPR_RE = re.compile(
+    r"__half2float\(\s*__hmul\(\s*__float2half(?:_rn)?\(\s*(?P<a>[^()]+?)\s*\)\s*,\s*__float2half(?:_rn)?\(\s*(?P<b>[^()]+?)\s*\)\s*\)\s*\)",
+    flags=re.MULTILINE,
+)
 
 
 def _strip_fenced_code(text: str) -> str:
@@ -87,6 +116,87 @@ def _validate_source_code(source_code: str) -> tuple[bool, str]:
     if _HALF_INTRINSIC_RE.search(source_code) and "#include <cuda_fp16.h>" not in source_code:
         return False, "uses_half_intrinsics_without_cuda_fp16_include"
     return True, ""
+
+
+def _candidate_family(candidate_id: str) -> str:
+    value = candidate_id.strip()
+    if not value:
+        return ""
+    previous = None
+    while previous != value:
+        previous = value
+        value = _CANDIDATE_FAMILY_SUFFIX_RE.sub("", value).rstrip("_-")
+    return value
+
+
+def _extract_stable_patch_family(state: Phase2OptimizerState) -> dict[str, Any] | None:
+    history = [item for item in state.llm_revision_history if isinstance(item, dict) and int(item.get("iteration", 0) or 0) > 0]
+    if len(history) < 3:
+        return None
+    recent = history[-3:]
+    candidate_ids: list[str] = []
+    for item in recent:
+        candidate_id = item.get("candidate_id")
+        generation_context = item.get("generation_context")
+        if not isinstance(candidate_id, str) or not candidate_id.strip():
+            return None
+        if not isinstance(generation_context, dict):
+            return None
+        if str(generation_context.get("revision_source_preference", "")) != "previous_candidate_patch_first":
+            return None
+        candidate_ids.append(candidate_id)
+    families = [_candidate_family(candidate_id) for candidate_id in candidate_ids]
+    if not families or any(not family for family in families):
+        return None
+    if len(set(families)) != 1:
+        return None
+    return {
+        "family_name": families[0],
+        "recent_candidate_ids": candidate_ids,
+    }
+
+
+def _programmatic_mutation_plans() -> list[dict[str, str]]:
+    return [
+        {"plan_id": "fmaf_to_plain_acc", "intent": "replace self-referential fmaf accumulators with plain multiply-add"},
+        {"plan_id": "plain_acc_to_fmaf", "intent": "replace plain multiply-add accumulators with self-referential fmaf"},
+        {"plan_id": "temp_round_disable", "intent": "remove explicit tf32_round_float when writing temp"},
+        {"plan_id": "temp_round_enable", "intent": "add explicit tf32_round_float when writing temp"},
+        {"plan_id": "tf32_helper_to_plain", "intent": "switch tf32 helper body to plain multiplication"},
+        {"plan_id": "plain_helper_to_tf32", "intent": "switch helper body to tf32-rounded multiplication"},
+        {"plan_id": "halfmul_to_plainmul", "intent": "replace halfmul expression with plain multiplication"},
+    ]
+
+
+def _apply_programmatic_mutation(source_code: str, *, plan_id: str) -> tuple[str, bool]:
+    mutated = source_code
+    changed = False
+    if plan_id == "fmaf_to_plain_acc":
+        mutated, count = _FMA_SELF_ACCUM_RE.subn(lambda m: f"{m.group('indent')}{m.group('acc')} += ({m.group('a').strip()}) * ({m.group('b').strip()});", mutated)
+        changed = count > 0
+    elif plan_id == "plain_acc_to_fmaf":
+        mutated, count = _PLAIN_SELF_ACCUM_RE.subn(lambda m: f"{m.group('indent')}{m.group('acc')} = fmaf({m.group('a').strip()}, {m.group('b').strip()}, {m.group('acc')});", mutated)
+        changed = count > 0
+    elif plan_id == "temp_round_disable":
+        mutated, count = _TEMP_ASSIGN_ROUNDED_RE.subn(lambda m: f"{m.group('lhs')}{m.group('rhs')};", mutated)
+        changed = count > 0
+    elif plan_id == "temp_round_enable":
+        def enable_temp_round(match: re.Match[str]) -> str:
+            lhs = match.group("lhs")
+            rhs = match.group("rhs")
+            return f"{lhs}tf32_round_float({rhs});"
+        mutated, count = _TEMP_ASSIGN_PLAIN_RE.subn(enable_temp_round, mutated)
+        changed = count > 0
+    elif plan_id == "tf32_helper_to_plain":
+        mutated, count = _TF32_HELPER_RET_RE.subn("return a * b;", mutated)
+        changed = count > 0
+    elif plan_id == "plain_helper_to_tf32":
+        mutated, count = _PLAIN_HELPER_RET_RE.subn("return tf32_round_float(a) * tf32_round_float(b);", mutated)
+        changed = count > 0
+    elif plan_id == "halfmul_to_plainmul":
+        mutated, count = _HALFMUL_EXPR_RE.subn(lambda m: f"(({m.group('a').strip()}) * ({m.group('b').strip()}))", mutated)
+        changed = count > 0
+    return mutated, changed
 
 
 def build_bootstrap_lora_source() -> str:
@@ -192,6 +302,66 @@ class LoraCandidateGenerator:
                 return value
         return ""
 
+    def _maybe_generate_programmatic_candidate(
+        self,
+        *,
+        state: Phase2OptimizerState,
+        feedback: dict[str, Any] | None,
+        default_id: str,
+    ) -> tuple[GeneratedCandidate | None, str]:
+        if not isinstance(feedback, dict):
+            return None, ""
+        correctness = feedback.get("correctness")
+        if not isinstance(correctness, dict):
+            return None, ""
+        if bool(correctness.get("passed")):
+            return None, ""
+        rel_l2_err = correctness.get("rel_l2_err")
+        if not isinstance(rel_l2_err, (int, float)) or float(rel_l2_err) > 1e-3:
+            return None, ""
+        stable_family = _extract_stable_patch_family(state)
+        if not isinstance(stable_family, dict):
+            return None, ""
+        previous_candidate = feedback.get("previous_candidate")
+        if not isinstance(previous_candidate, dict):
+            return None, ""
+        base_source = previous_candidate.get("source_code")
+        base_id = previous_candidate.get("candidate_id")
+        if not isinstance(base_source, str) or not base_source.strip():
+            return None, ""
+        if not isinstance(base_id, str) or not base_id.strip():
+            return None, ""
+        family = stable_family.get("family_name")
+        if not isinstance(family, str) or not family:
+            return None, ""
+        if _candidate_family(base_id) != family:
+            return None, ""
+        plans = _programmatic_mutation_plans()
+        plan = plans[(max(0, state.iteration - 1)) % len(plans)]
+        mutated_source, changed = _apply_programmatic_mutation(base_source, plan_id=plan["plan_id"])
+        if not changed:
+            for fallback_plan in plans:
+                mutated_source, changed = _apply_programmatic_mutation(base_source, plan_id=fallback_plan["plan_id"])
+                if changed:
+                    plan = fallback_plan
+                    break
+        if not changed:
+            return None, ""
+        normalized = _normalize_source_code(mutated_source)
+        ok, error = _validate_source_code(normalized)
+        if not ok:
+            return None, f"programmatic_mutation_invalid:{plan['plan_id']}:{error}"
+        candidate = GeneratedCandidate(
+            candidate_id=_sanitize_candidate_id(f"{family}-{plan['plan_id']}-{state.iteration:02d}", default=default_id),
+            source_code=normalized,
+            rationale=(
+                f"programmatic_local_enumeration:{plan['plan_id']} "
+                f"from previous candidate {base_id} by applying a single local numeric-path mutation"
+            ),
+            source="programmatic_mutation",
+        )
+        return candidate, f"programmatic_mutation:{plan['plan_id']}"
+
     def generate_candidate(
         self,
         *,
@@ -214,6 +384,26 @@ class LoraCandidateGenerator:
                 candidate=candidate,
             )
             return candidate
+
+        programmatic_candidate, programmatic_reason = self._maybe_generate_programmatic_candidate(
+            state=state,
+            feedback=feedback,
+            default_id=default_id,
+        )
+        if programmatic_candidate is not None:
+            self._write_generation_debug(
+                iteration=state.iteration,
+                payload={
+                    "mode": "programmatic_local_enumeration",
+                    "feedback_preview": {
+                        "previous_candidate_id": ((feedback.get("previous_candidate") or {}).get("candidate_id") if isinstance(feedback, dict) else None),
+                        "rel_l2_err": ((feedback.get("correctness") or {}).get("rel_l2_err") if isinstance(feedback, dict) else None),
+                    },
+                },
+                fallback_reason=programmatic_reason,
+                candidate=programmatic_candidate,
+            )
+            return programmatic_candidate
 
         payload = self.llm_client.complete_json(
             system_prompt=build_lora_generation_system_prompt(),
