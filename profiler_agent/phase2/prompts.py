@@ -270,6 +270,66 @@ def _extract_stable_patch_family_summary(state: Phase2OptimizerState) -> dict[st
     }
 
 
+def _build_local_mutation_axes(
+    *,
+    candidate_strategy: str,
+    patch_discipline: str,
+    reference_diagnosis: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if candidate_strategy not in {"fit_torch_tf32_reference", "fit_torch_reference_over_naive", "match_reference_float32_semantics"}:
+        return []
+    high_balance_pressure = False
+    if isinstance(reference_diagnosis, dict):
+        spread = reference_diagnosis.get("reference_gap_spread")
+        if isinstance(spread, (int, float)) and float(spread) >= 1e-4:
+            high_balance_pressure = True
+    axes = [
+        {
+            "axis": "wx_numeric_path",
+            "allowed_values": ["keep_current", "tf32ish", "plain_fp32"],
+            "intent": "change only the W*X multiply-accumulate path",
+        },
+        {
+            "axis": "temp_numeric_path",
+            "allowed_values": ["keep_current", "tf32ish", "plain_fp32"],
+            "intent": "change only the B^T X stage numeric path",
+        },
+        {
+            "axis": "lowrank_numeric_path",
+            "allowed_values": ["keep_current", "tf32ish", "plain_fp32"],
+            "intent": "change only the A*temp stage numeric path",
+        },
+        {
+            "axis": "temp_store_rounding",
+            "allowed_values": ["keep_current", "enabled", "disabled"],
+            "intent": "toggle whether temp is explicitly rounded when written or read",
+        },
+        {
+            "axis": "accumulation_operator",
+            "allowed_values": ["keep_current", "fmaf", "plain_add_mul"],
+            "intent": "toggle only the local accumulation primitive without changing loop structure",
+        },
+        {
+            "axis": "accumulation_grouping",
+            "allowed_values": ["keep_current", "single_accumulator", "split_accumulator"],
+            "intent": "change only how one reduction is grouped",
+        },
+    ]
+    if patch_discipline == "strict_local_patch":
+        for axis in axes:
+            axis["max_changes_from_previous_candidate"] = 1
+        if high_balance_pressure:
+            axes.append(
+                {
+                    "axis": "stage_specific_balance_tuning",
+                    "allowed_values": ["keep_current", "wx_only", "temp_only", "lowrank_only"],
+                    "intent": "borrow exactly one stage-local idea to improve cross-dimension balance without altering the whole family",
+                    "max_changes_from_previous_candidate": 1,
+                }
+            )
+    return axes
+
+
 def build_lora_generation_system_prompt() -> str:
     return (
         "You are generating a single-file CUDA C++ candidate for LoRA operator optimization. "
@@ -356,6 +416,11 @@ def build_lora_generation_user_prompt(
     patch_discipline = "normal"
     if isinstance(stable_patch_family, dict):
         patch_discipline = "strict_local_patch"
+    local_mutation_axes = _build_local_mutation_axes(
+        candidate_strategy=candidate_strategy,
+        patch_discipline=patch_discipline,
+        reference_diagnosis=reference_diagnosis,
+    )
     strategy_specific_guidance: list[str] = []
     if candidate_strategy == "fit_torch_reference_over_naive":
         strategy_specific_guidance = [
@@ -417,6 +482,7 @@ def build_lora_generation_user_prompt(
         "reference_diagnosis_summary": reference_diagnosis or {},
         "torch_precision_summary": torch_precision or {},
         "stable_patch_family_summary": stable_patch_family or {},
+        "local_mutation_axes": local_mutation_axes,
         "per_spec_feedback": per_spec_feedback,
         "previous_candidate": previous_candidate,
         "base_candidate": base_candidate,
@@ -462,6 +528,8 @@ def build_lora_generation_user_prompt(
                 "revise the immediately previous candidate in place when it compiled and produced meaningful metrics; do not reset to a new baseline family unless the previous attempt catastrophically failed",
                 "if the recent revision history is already a stable patch chain within one candidate family, preserve that family and apply only a local numeric-path patch rather than renaming or re-architecting the candidate",
                 "when patch_discipline is strict_local_patch, do not introduce a new candidate family; keep the same structural skeleton and modify only one narrow behavior such as one stage, one rounding rule, one accumulation grouping, or one temp-handling detail",
+                "when local_mutation_axes are provided, choose one or at most two axes and keep all other numeric behaviors unchanged",
+                "prefer a mutation that can be described as a narrow toggle on the previous candidate rather than a fresh rewrite",
                 "treat the preferred revision source candidate as the starting point and revise it instead of discarding it",
                 "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
                 "make the smallest set of changes that can plausibly improve correctness toward the reference",

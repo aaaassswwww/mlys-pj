@@ -588,8 +588,12 @@ class Phase2GeneratorTests(unittest.TestCase):
         )
         self.assertIn('"patch_discipline": "strict_local_patch"', prompt)
         self.assertIn('"family_name": "simple_two_kernel_tf32_stage_selective"', prompt)
+        self.assertIn('"local_mutation_axes": [', prompt)
+        self.assertIn('"axis": "wx_numeric_path"', prompt)
+        self.assertIn('"max_changes_from_previous_candidate": 1', prompt)
         self.assertIn("do not introduce a new candidate family", prompt)
         self.assertIn("apply only a local numeric-path patch", prompt)
+        self.assertIn("choose one or at most two axes", prompt)
 
 
 if __name__ == "__main__":
