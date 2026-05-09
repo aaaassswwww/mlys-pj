@@ -158,26 +158,19 @@ def _extract_stable_patch_family(state: Phase2OptimizerState) -> dict[str, Any] 
 
 def _programmatic_mutation_plans() -> list[dict[str, str]]:
     return [
-        {"plan_id": "fmaf_to_plain_acc", "intent": "replace self-referential fmaf accumulators with plain multiply-add"},
-        {"plan_id": "plain_acc_to_fmaf", "intent": "replace plain multiply-add accumulators with self-referential fmaf"},
-        {"plan_id": "temp_round_disable", "intent": "remove explicit tf32_round_float when writing temp"},
-        {"plan_id": "temp_round_enable", "intent": "add explicit tf32_round_float when writing temp"},
-        {"plan_id": "tf32_helper_to_plain", "intent": "switch tf32 helper body to plain multiplication"},
-        {"plan_id": "plain_helper_to_tf32", "intent": "switch helper body to tf32-rounded multiplication"},
-        {"plan_id": "halfmul_to_plainmul", "intent": "replace halfmul expression with plain multiplication"},
+        {"plan_id": "temp_round_disable", "intent": "remove explicit tf32_round_float only at the temp stage boundary"},
+        {"plan_id": "temp_round_enable", "intent": "add explicit tf32_round_float only at the temp stage boundary"},
+        {"plan_id": "lowrank_fmaf_to_plain_acc", "intent": "replace only low-rank self-referential fmaf accumulators with plain multiply-add"},
+        {"plan_id": "lowrank_plain_acc_to_fmaf", "intent": "replace only low-rank plain multiply-add accumulators with self-referential fmaf"},
+        {"plan_id": "temp_halfmul_to_plainmul", "intent": "replace only temp-stage halfmul expressions with plain multiplication"},
+        {"plan_id": "lowrank_halfmul_to_plainmul", "intent": "replace only low-rank halfmul expressions with plain multiplication"},
     ]
 
 
 def _apply_programmatic_mutation(source_code: str, *, plan_id: str) -> tuple[str, bool]:
     mutated = source_code
     changed = False
-    if plan_id == "fmaf_to_plain_acc":
-        mutated, count = _FMA_SELF_ACCUM_RE.subn(lambda m: f"{m.group('indent')}{m.group('acc')} += ({m.group('a').strip()}) * ({m.group('b').strip()});", mutated)
-        changed = count > 0
-    elif plan_id == "plain_acc_to_fmaf":
-        mutated, count = _PLAIN_SELF_ACCUM_RE.subn(lambda m: f"{m.group('indent')}{m.group('acc')} = fmaf({m.group('a').strip()}, {m.group('b').strip()}, {m.group('acc')});", mutated)
-        changed = count > 0
-    elif plan_id == "temp_round_disable":
+    if plan_id == "temp_round_disable":
         mutated, count = _TEMP_ASSIGN_ROUNDED_RE.subn(lambda m: f"{m.group('lhs')}{m.group('rhs')};", mutated)
         changed = count > 0
     elif plan_id == "temp_round_enable":
@@ -187,15 +180,90 @@ def _apply_programmatic_mutation(source_code: str, *, plan_id: str) -> tuple[str
             return f"{lhs}tf32_round_float({rhs});"
         mutated, count = _TEMP_ASSIGN_PLAIN_RE.subn(enable_temp_round, mutated)
         changed = count > 0
-    elif plan_id == "tf32_helper_to_plain":
-        mutated, count = _TF32_HELPER_RET_RE.subn("return a * b;", mutated)
-        changed = count > 0
-    elif plan_id == "plain_helper_to_tf32":
-        mutated, count = _PLAIN_HELPER_RET_RE.subn("return tf32_round_float(a) * tf32_round_float(b);", mutated)
-        changed = count > 0
-    elif plan_id == "halfmul_to_plainmul":
-        mutated, count = _HALFMUL_EXPR_RE.subn(lambda m: f"(({m.group('a').strip()}) * ({m.group('b').strip()}))", mutated)
-        changed = count > 0
+    elif plan_id == "lowrank_fmaf_to_plain_acc":
+        lines = mutated.splitlines()
+        out_lines: list[str] = []
+        in_lowrank = False
+        local_changed = False
+        for line in lines:
+            if "for (int k = 0;" in line or "for(int k = 0;" in line:
+                in_lowrank = True
+            if in_lowrank:
+                new_line, count = _FMA_SELF_ACCUM_RE.subn(
+                    lambda m: f"{m.group('indent')}{m.group('acc')} += ({m.group('a').strip()}) * ({m.group('b').strip()});",
+                    line,
+                )
+                if count > 0:
+                    local_changed = True
+                line = new_line
+            out_lines.append(line)
+            if in_lowrank and "}" in line:
+                in_lowrank = False
+        mutated = "\n".join(out_lines) + ("\n" if source_code.endswith("\n") else "")
+        changed = local_changed
+    elif plan_id == "lowrank_plain_acc_to_fmaf":
+        lines = mutated.splitlines()
+        out_lines = []
+        in_lowrank = False
+        local_changed = False
+        for line in lines:
+            if "for (int k = 0;" in line or "for(int k = 0;" in line:
+                in_lowrank = True
+            if in_lowrank:
+                new_line, count = _PLAIN_SELF_ACCUM_RE.subn(
+                    lambda m: f"{m.group('indent')}{m.group('acc')} = fmaf({m.group('a').strip()}, {m.group('b').strip()}, {m.group('acc')});",
+                    line,
+                )
+                if count > 0:
+                    local_changed = True
+                line = new_line
+            out_lines.append(line)
+            if in_lowrank and "}" in line:
+                in_lowrank = False
+        mutated = "\n".join(out_lines) + ("\n" if source_code.endswith("\n") else "")
+        changed = local_changed
+    elif plan_id == "temp_halfmul_to_plainmul":
+        lines = mutated.splitlines()
+        out_lines = []
+        in_temp = False
+        local_changed = False
+        for line in lines:
+            if "compute_temp" in line and "(" in line:
+                in_temp = True
+            if in_temp:
+                new_line, count = _HALFMUL_EXPR_RE.subn(
+                    lambda m: f"(({m.group('a').strip()}) * ({m.group('b').strip()}))",
+                    line,
+                )
+                if count > 0:
+                    local_changed = True
+                line = new_line
+            out_lines.append(line)
+            if in_temp and line.strip() == "}":
+                in_temp = False
+        mutated = "\n".join(out_lines) + ("\n" if source_code.endswith("\n") else "")
+        changed = local_changed
+    elif plan_id == "lowrank_halfmul_to_plainmul":
+        lines = mutated.splitlines()
+        out_lines = []
+        in_lowrank = False
+        local_changed = False
+        for line in lines:
+            if "for (int k = 0;" in line or "for(int k = 0;" in line:
+                in_lowrank = True
+            if in_lowrank:
+                new_line, count = _HALFMUL_EXPR_RE.subn(
+                    lambda m: f"(({m.group('a').strip()}) * ({m.group('b').strip()}))",
+                    line,
+                )
+                if count > 0:
+                    local_changed = True
+                line = new_line
+            out_lines.append(line)
+            if in_lowrank and "}" in line:
+                in_lowrank = False
+        mutated = "\n".join(out_lines) + ("\n" if source_code.endswith("\n") else "")
+        changed = local_changed
     return mutated, changed
 
 

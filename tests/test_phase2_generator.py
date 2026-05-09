@@ -116,11 +116,13 @@ class Phase2GeneratorTests(unittest.TestCase):
         )
         source = (
             '#include <cuda_runtime.h>\n'
+            'float tf32_round_float(float x) { return x; }\n'
             'extern "C" void launch_optimized_lora('
             'const float* W, const float* X, const float* A, const float* B, '
             'float* Y, int d, int n, cudaStream_t stream) {\n'
-            '  float sum = 0.0f;\n'
-            '  sum = fmaf(W[0], X[0], sum);\n'
+            '  float temp[16];\n'
+            '  float acc = 0.0f;\n'
+            '  temp[0] = tf32_round_float(acc);\n'
             '}\n'
         )
         generator = LoraCandidateGenerator(llm_client=mock_llm)
