@@ -351,6 +351,44 @@ class Phase2EvaluatorTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_build_torch_extension_candidate_runner_detects_direct_extension_from_file_when_candidate_source_empty(self) -> None:
+        class FakeBackend:
+            def synchronize(self) -> None:
+                return None
+
+        class FakeModule:
+            def forward(self, W, X, A, B):
+                return ("ok", W, X, A, B)
+
+        root = Path("tests/.tmp") / f"phase2_torch_ext_direct_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            paths = build_candidate_artifact_paths(root, "cand-direct")
+            paths.source_path.write_text(
+                "#include <torch/extension.h>\n"
+                "torch::Tensor forward(torch::Tensor W, torch::Tensor X, torch::Tensor A, torch::Tensor B) { return W; }\n"
+                "PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def(\"forward\", &forward); }\n",
+                encoding="utf-8",
+            )
+            candidate = GeneratedCandidate(candidate_id="cand-direct", source_code="")
+            fake_load = Mock(return_value=FakeModule())
+            fake_torch = object()
+            runner = build_torch_extension_candidate_runner()
+            with patch.dict("sys.modules", {"torch": fake_torch, "torch.utils.cpp_extension": Mock(load=fake_load)}):
+                runner(
+                    candidate,
+                    paths,
+                    LoadResult(ok=True, library_path=str(paths.library_path), symbol_name="launch_optimized_lora"),
+                    LoraProblemSpec(hidden_dim=8, output_dim=4, num_tokens=3, device="cuda"),
+                    {"W": "w", "X": "x", "A": "a", "B": "b"},
+                    FakeBackend(),
+                )
+            load_call = fake_load.call_args
+            self.assertIsNotNone(load_call)
+            self.assertEqual(load_call.kwargs["sources"], [str(paths.source_path)])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_subprocess_runtime_evaluator_reads_child_response(self) -> None:
         root = Path("tests/.tmp") / f"phase2_subproc_eval_{uuid4().hex}"
         root.mkdir(parents=True, exist_ok=True)

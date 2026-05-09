@@ -577,7 +577,13 @@ def build_torch_extension_candidate_runner(
             source_hash = hashlib.sha256(paths.source_path.read_bytes()).hexdigest()[:12]
             module_name = f"{_torch_extension_module_name(candidate.candidate_id)}_{source_hash}"
             sources = [str(paths.source_path)]
-            if not _looks_like_direct_torch_extension_source(candidate.source_code):
+            candidate_source = candidate.source_code
+            if not candidate_source:
+                try:
+                    candidate_source = paths.source_path.read_text(encoding="utf-8")
+                except OSError:
+                    candidate_source = ""
+            if not _looks_like_direct_torch_extension_source(candidate_source):
                 wrapper_path = paths.source_path.parent / wrapper_filename
                 wrapper_path.write_text(_torch_extension_wrapper_source(), encoding="utf-8")
                 sources = [str(wrapper_path), str(paths.source_path)]
