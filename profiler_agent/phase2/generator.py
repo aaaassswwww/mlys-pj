@@ -266,10 +266,20 @@ def _apply_programmatic_mutation(source_code: str, *, plan_id: str) -> tuple[str
 
 
 def build_bootstrap_lora_source() -> str:
-    return build_reference_safe_cublas_source()
+    return build_reference_safe_cublas_source(use_tf32_math=True)
 
 
-def build_reference_safe_cublas_source() -> str:
+def build_reference_safe_cublas_source(*, use_tf32_math: bool) -> str:
+    tf32_math_block = (
+        "#ifdef CUBLAS_TF32_TENSOR_OP_MATH\n"
+        "    cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH);\n"
+        "#endif\n"
+        if use_tf32_math
+        else
+        "#ifdef CUBLAS_DEFAULT_MATH\n"
+        "    cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH);\n"
+        "#endif\n"
+    )
     return (
         "#include <cuda_runtime.h>\n"
         "#include <cublas_v2.h>\n"
@@ -328,9 +338,7 @@ def build_reference_safe_cublas_source() -> str:
         "        return;\n"
         "    }\n"
         "    cublasSetStream(handle, stream);\n"
-        "#ifdef CUBLAS_TF32_TENSOR_OP_MATH\n"
-        "    cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH);\n"
-        "#endif\n"
+        f"{tf32_math_block}"
         "\n"
         "    float* temp = nullptr;\n"
         "    float* delta = nullptr;\n"
@@ -362,6 +370,61 @@ def build_reference_safe_cublas_source() -> str:
         "    cublasDestroy(handle);\n"
         "}\n"
     )
+
+
+def _is_cublas_candidate_signature(*, candidate_id: str | None = None, source_code: str | None = None) -> bool:
+    if isinstance(candidate_id, str) and "cublas" in candidate_id.lower():
+        return True
+    if isinstance(source_code, str):
+        lowered = source_code.lower()
+        if "#include <cublas_v2.h>" in lowered or "cublas" in lowered:
+            return True
+    return False
+
+
+def _build_reference_safe_cublas_candidate(*, iteration: int) -> GeneratedCandidate:
+    use_tf32_math = (iteration % 2) == 1
+    mode = "tf32" if use_tf32_math else "defaultmath"
+    return GeneratedCandidate(
+        candidate_id=f"all-gemm-cublas-safe-{mode}-v{iteration:02d}",
+        source_code=build_reference_safe_cublas_source(use_tf32_math=use_tf32_math),
+        rationale=(
+            "deterministic correctness-safe candidate that keeps W@X, B^T@X, and A@temp on cuBLAS-backed GEMMs "
+            f"with {mode} math mode, avoiding freeform numeric-path mutations until correctness passes"
+        ),
+        source="deterministic_reference_safe",
+    )
+
+
+def _should_force_reference_safe_cublas_family(
+    *,
+    state: Phase2OptimizerState,
+    feedback: dict[str, Any] | None,
+) -> bool:
+    if state.current_best_correct_candidate_id is not None:
+        return False
+    if state.iteration == 1:
+        return True
+    if not isinstance(feedback, dict):
+        return False
+    previous_candidate = feedback.get("previous_candidate")
+    if isinstance(previous_candidate, dict):
+        if _is_cublas_candidate_signature(
+            candidate_id=previous_candidate.get("candidate_id"),
+            source_code=previous_candidate.get("source_code"),
+        ):
+            return True
+    if _is_cublas_candidate_signature(
+        candidate_id=state.current_best_candidate_id,
+        source_code=state.current_best_source_code,
+    ):
+        return True
+    if _is_cublas_candidate_signature(
+        candidate_id=state.current_best_reference_candidate_id,
+        source_code=state.current_best_reference_source_code,
+    ):
+        return True
+    return False
 
 
 class LoraCandidateGenerator:
@@ -505,17 +568,12 @@ class LoraCandidateGenerator:
             )
             return candidate
 
-        if feedback is None and state.iteration == 1:
-            candidate = GeneratedCandidate(
-                candidate_id="seed-cublas-safe",
-                source_code=build_reference_safe_cublas_source(),
-                rationale="deterministic correctness-safe seed candidate using cuBLAS-backed GEMMs before any freeform LLM search",
-                source="deterministic_reference_safe",
-            )
+        if _should_force_reference_safe_cublas_family(state=state, feedback=feedback):
+            candidate = _build_reference_safe_cublas_candidate(iteration=state.iteration)
             self._write_generation_debug(
                 iteration=state.iteration,
-                payload={"mode": "deterministic_reference_safe_seed"},
-                fallback_reason="deterministic_reference_safe_seed",
+                payload={"mode": "deterministic_reference_safe_family_locked"},
+                fallback_reason="deterministic_reference_safe_family_locked",
                 candidate=candidate,
             )
             return candidate
