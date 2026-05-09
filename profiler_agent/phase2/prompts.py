@@ -585,6 +585,7 @@ def build_lora_generation_user_prompt(
             "Do not leave the current correct candidate family; preserve the same correctness-safe cuBLAS family and only optimize engineering details around it.",
             "Prefer changes such as handle reuse, workspace reuse, buffer lifetime management, pointer-mode cleanup, stream-safe caching, and early-return fast paths.",
             "Do not re-open numeric-path exploration after correctness has passed; avoid changing GEMM semantics, accumulation precision, or reduced-precision approximations unless there is a clear measured need and correctness is preserved.",
+            "If a speculative speedup family starts failing correctness repeatedly, immediately fall back to the last known-correct family and continue with lower-risk engineering optimizations there.",
         ]
     focus_hidden_dim: int | None = None
     if isinstance(reference_diagnosis, dict):

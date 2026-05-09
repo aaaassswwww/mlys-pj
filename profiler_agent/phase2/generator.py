@@ -713,6 +713,15 @@ def _should_force_speedup_rank16_family(
 ) -> bool:
     if state.current_best_correct_candidate_id is None:
         return False
+    rank16_failures = 0
+    for item in state.correctness_failures:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = item.get("candidate_id")
+        if isinstance(candidate_id, str) and candidate_id.startswith("cublas-rank16-update-"):
+            rank16_failures += 1
+    if rank16_failures >= 3:
+        return False
     return _is_cublas_candidate_signature(
         candidate_id=state.current_best_correct_candidate_id,
         source_code=state.current_best_source_code,

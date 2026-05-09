@@ -33,8 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--phase2-iterations",
         type=int,
-        default=15,
-        help="maximum optimization iterations for phase2 workflow; default 15, set 0 to iterate until time budget stop",
+        default=0,
+        help="maximum optimization iterations for phase2 workflow; default 0 means iterate until time budget stop",
     )
     parser.add_argument(
         "--llm-secret-file",

@@ -57,6 +57,48 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertNotIn("float* delta", candidate.source_code)
         mock_llm.complete_json.assert_not_called()
 
+    def test_generate_candidate_stops_forcing_rank16_speedup_family_after_repeated_failures(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        mock_llm.complete_json.return_value = {
+            "candidate_id": "speedup-fallback",
+            "rationale": "fallback to correct family engineering tweak",
+            "source_code": (
+                '#include <cuda_runtime.h>\n'
+                '#include <cublas_v2.h>\n'
+                '__global__ void k() {}\n'
+                'extern "C" void launch_optimized_lora('
+                'const float* W, const float* X, const float* A, const float* B, '
+                'float* Y, int d, int n, cudaStream_t stream) {\n'
+                '  (void)W; (void)X; (void)A; (void)B; (void)Y; (void)d; (void)n; (void)stream;\n'
+                '}\n'
+            ),
+        }
+        state = Phase2OptimizerState(
+            iteration=20,
+            current_best_candidate_id="all-gemm-cublas-safe-tf32-v13",
+            current_best_correct_candidate_id="all-gemm-cublas-safe-tf32-v13",
+            current_best_source_code=(
+                "#include <cuda_runtime.h>\n"
+                "#include <cublas_v2.h>\n"
+                'extern "C" void launch_optimized_lora(const float* W, const float* X, const float* A, const float* B, float* Y, int d, int n, cudaStream_t stream) {}\n'
+            ),
+            current_best_source="deterministic_reference_safe",
+            correctness_failures=[
+                {"candidate_id": "cublas-rank16-update-rank16-scalar-b128-v17"},
+                {"candidate_id": "cublas-rank16-update-rank16-vec4-b256-v18"},
+                {"candidate_id": "cublas-rank16-update-rank16-shape-vec4-v19"},
+            ],
+        )
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(
+            state=state,
+            feedback={"correctness": {"passed": True, "rel_l2_err": 0.0, "max_abs_err": 0.0}},
+        )
+        self.assertEqual(candidate.source, "llm_generated")
+        self.assertEqual(candidate.candidate_id, "speedup-fallback")
+        mock_llm.complete_json.assert_called_once()
+
     def test_generate_candidate_uses_llm_payload_when_valid_after_seed_iteration(self) -> None:
         mock_llm = Mock()
         mock_llm.is_enabled.return_value = True
