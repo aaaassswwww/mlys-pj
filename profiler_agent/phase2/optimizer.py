@@ -276,6 +276,7 @@ def run_phase2_optimization(
                     "generation_context": generation_context,
                 }
             )
+            state.last_completed_iteration = iteration
             persist()
             fatal_stop_reason = _fatal_evaluation_stop_reason(evaluation)
             if fatal_stop_reason:

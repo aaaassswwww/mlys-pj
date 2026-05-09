@@ -96,6 +96,7 @@ class CandidateEvaluation:
 @dataclass
 class Phase2OptimizerState:
     iteration: int = 0
+    last_completed_iteration: int = 0
     current_best_candidate_id: str | None = None
     current_best_correct_candidate_id: str | None = None
     current_best_source_code: str = ""

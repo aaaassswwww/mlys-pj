@@ -155,6 +155,7 @@ def write_phase2_report(
         "best_max_abs_err": state.best_max_abs_err,
         "best_reference_rel_l2_err": state.best_reference_rel_l2_err,
         "iterations_run": state.iteration,
+        "last_completed_iteration": state.last_completed_iteration,
         "stop_reason": state.stop_reason,
         "candidate_history_count": len(state.candidate_history),
         "correctness_failures_count": len(state.correctness_failures),

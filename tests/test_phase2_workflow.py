@@ -72,8 +72,10 @@ class Phase2WorkflowTests(unittest.TestCase):
             state_json = json.loads((root / ".agent_artifacts" / "phase2_state.json").read_text(encoding="utf-8"))
             report_json = json.loads((root / ".agent_artifacts" / "phase2_report.json").read_text(encoding="utf-8"))
             self.assertEqual(state_json["iteration"], 2)
+            self.assertEqual(state_json["last_completed_iteration"], 2)
             self.assertTrue(state_json["done"])
             self.assertGreaterEqual(report_json["candidate_history_count"], 2)
+            self.assertEqual(report_json["last_completed_iteration"], 2)
             self.assertIn("recent_candidates", report_json)
             self.assertTrue((root / ".agent_artifacts" / "phase2_codegen_debug").exists())
         finally:
