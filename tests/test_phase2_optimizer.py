@@ -315,6 +315,78 @@ class Phase2OptimizerTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_optimizer_recovers_from_fatal_cuda_runtime_error_when_best_correct_exists(self) -> None:
+        root = Path("tests/.tmp") / f"phase2_opt_fatal_recover_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            generated_ids: list[str] = []
+
+            def generator(state: Phase2OptimizerState, feedback):
+                _ = feedback
+                candidate_id = f"cand-{state.iteration}"
+                generated_ids.append(candidate_id)
+                return GeneratedCandidate(candidate_id=candidate_id, source_code=f"// {candidate_id}")
+
+            def evaluator(candidate: GeneratedCandidate) -> CandidateEvaluation:
+                if candidate.candidate_id == "cand-1":
+                    correctness = CorrectnessResult(passed=True, max_abs_err=0.0, rel_l2_err=0.0, rtol=1e-4, atol=1e-4)
+                    speedup = 1.1
+                    notes: list[str] = []
+                elif candidate.candidate_id == "cand-2":
+                    correctness = CorrectnessResult(
+                        passed=False,
+                        max_abs_err=float("inf"),
+                        rel_l2_err=float("inf"),
+                        rtol=1e-4,
+                        atol=1e-4,
+                    )
+                    speedup = 0.0
+                    notes = ["fatal_cuda_runtime_error:hidden_dim=3584:RuntimeError"]
+                else:
+                    correctness = CorrectnessResult(passed=True, max_abs_err=0.0, rel_l2_err=0.0, rtol=1e-4, atol=1e-4)
+                    speedup = 1.2
+                    notes = []
+                bench_student = BenchmarkResult(
+                    warmup_runs=1,
+                    measured_runs=3,
+                    median_runtime_ms=10.0,
+                    min_runtime_ms=9.0,
+                    max_runtime_ms=11.0,
+                    all_runtime_ms=[10.0, 10.0, 10.0],
+                )
+                bench_ref = BenchmarkResult(
+                    warmup_runs=1,
+                    measured_runs=3,
+                    median_runtime_ms=12.0,
+                    min_runtime_ms=11.0,
+                    max_runtime_ms=13.0,
+                    all_runtime_ms=[12.0, 12.0, 12.0],
+                )
+                return CandidateEvaluation(
+                    candidate_id=candidate.candidate_id,
+                    correctness=correctness,
+                    student_benchmark=bench_student,
+                    reference_benchmark=bench_ref,
+                    speedup=speedup,
+                    notes=notes,
+                )
+
+            with patch.dict("os.environ", {"PROFILER_AGENT_PHASE2_SPEEDUP_ITERATIONS": "3"}, clear=False):
+                result = run_phase2_optimization(
+                    root_dir=root,
+                    max_iterations=3,
+                    candidate_generator=generator,
+                    candidate_evaluator=evaluator,
+                )
+
+            self.assertEqual(result.iterations_run, 3)
+            self.assertEqual(result.state.stop_reason, "max_iterations_reached:3")
+            self.assertEqual(generated_ids, ["cand-1", "cand-2", "cand-3"])
+            report_json = json.loads((root / ".agent_artifacts" / "phase2_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report_json["current_best_correct_candidate_id"], "cand-3")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_optimizer_extends_iteration_limit_after_correctness_passes(self) -> None:
         root = Path("tests/.tmp") / f"phase2_opt_speedup_extend_{uuid4().hex}"
         root.mkdir(parents=True, exist_ok=True)

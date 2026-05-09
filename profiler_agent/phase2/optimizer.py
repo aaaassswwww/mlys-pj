@@ -53,6 +53,66 @@ def _fatal_evaluation_stop_reason(evaluation: CandidateEvaluation) -> str:
     return ""
 
 
+def _find_candidate_history_entry(
+    state: Phase2OptimizerState,
+    candidate_id: str | None,
+) -> dict[str, object] | None:
+    if not isinstance(candidate_id, str) or not candidate_id:
+        return None
+    for entry in reversed(state.candidate_history):
+        if isinstance(entry, dict) and entry.get("candidate_id") == candidate_id:
+            return entry
+    return None
+
+
+def _build_recovery_feedback_from_best_correct_candidate(
+    state: Phase2OptimizerState,
+    *,
+    fatal_reason: str,
+) -> dict[str, object] | None:
+    if not state.current_best_correct_candidate_id or not state.current_best_source_code:
+        return None
+    history_entry = _find_candidate_history_entry(state, state.current_best_correct_candidate_id)
+    evaluation_payload = (history_entry or {}).get("evaluation") if isinstance(history_entry, dict) else {}
+    evaluation_payload = evaluation_payload if isinstance(evaluation_payload, dict) else {}
+    correctness = evaluation_payload.get("correctness") if isinstance(evaluation_payload.get("correctness"), dict) else {}
+    benchmark = {
+        "student_median_runtime_ms": (
+            ((evaluation_payload.get("student_benchmark") or {}).get("median_runtime_ms"))
+            if isinstance(evaluation_payload.get("student_benchmark"), dict)
+            else 0.0
+        ),
+        "reference_median_runtime_ms": (
+            ((evaluation_payload.get("reference_benchmark") or {}).get("median_runtime_ms"))
+            if isinstance(evaluation_payload.get("reference_benchmark"), dict)
+            else 0.0
+        ),
+        "speedup": ((history_entry or {}).get("evaluation") or {}).get("speedup", state.best_speedup)
+        if isinstance(history_entry, dict)
+        else state.best_speedup,
+    }
+    notes = list(evaluation_payload.get("notes", [])) if isinstance(evaluation_payload.get("notes"), list) else []
+    notes.append(f"recovered_after_fatal_candidate:{fatal_reason}")
+    return build_candidate_feedback(
+        compile_ok=True,
+        correctness=(
+            correctness
+            if isinstance(correctness, dict) and correctness
+            else {"passed": True, "rel_l2_err": 0.0, "max_abs_err": 0.0}
+        ),
+        per_spec=list(evaluation_payload.get("per_spec", [])) if isinstance(evaluation_payload.get("per_spec"), list) else [],
+        benchmark=benchmark,
+        profile={},
+        notes=notes,
+        previous_candidate={
+            "candidate_id": state.current_best_correct_candidate_id,
+            "rationale": state.current_best_rationale,
+            "source": state.current_best_source,
+            "source_code": state.current_best_source_code,
+        },
+    )
+
+
 def _normalize_iteration_limit(max_iterations: int | None) -> int | None:
     if max_iterations is not None and max_iterations > 0:
         return int(max_iterations)
@@ -219,8 +279,30 @@ def run_phase2_optimization(
             persist()
             fatal_stop_reason = _fatal_evaluation_stop_reason(evaluation)
             if fatal_stop_reason:
-                state.stop_reason = fatal_stop_reason
-                break
+                recovery_feedback = _build_recovery_feedback_from_best_correct_candidate(
+                    state,
+                    fatal_reason=fatal_stop_reason,
+                )
+                if recovery_feedback is None:
+                    state.stop_reason = fatal_stop_reason
+                    break
+                last_feedback = recovery_feedback
+                state.llm_revision_history.append(
+                    {
+                        "iteration": iteration,
+                        "candidate_id": candidate.candidate_id,
+                        "rationale": candidate.rationale,
+                        "feedback": {"recovery": "fallback_to_best_correct_candidate_after_fatal"},
+                        "source": candidate.source,
+                        "generation_context": {
+                            **generation_context,
+                            "recovery_action": "fallback_to_best_correct_candidate_after_fatal",
+                        },
+                    }
+                )
+                persist()
+                iteration += 1
+                continue
             iteration += 1
 
         if not state.stop_reason:
