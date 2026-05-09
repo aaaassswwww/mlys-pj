@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -459,6 +461,117 @@ def build_ctypes_candidate_runner(
             spec=spec,
             stream_ptr=stream_ptr,
         )
+        synchronize = getattr(backend, "synchronize", None)
+        if callable(synchronize):
+            synchronize()
+        return output
+
+    return runner
+
+
+def _torch_extension_module_name(candidate_id: str) -> str:
+    cleaned = re.sub(r"[^0-9a-zA-Z_]+", "_", candidate_id).strip("_")
+    cleaned = cleaned or "optimized_lora_ext"
+    if cleaned[0].isdigit():
+        cleaned = f"optimized_lora_ext_{cleaned}"
+    return cleaned
+
+
+def _torch_extension_wrapper_source() -> str:
+    return (
+        "#include <torch/extension.h>\n"
+        "#include <cuda_runtime.h>\n"
+        "\n"
+        'extern "C" void launch_optimized_lora(\n'
+        "    const float* W,\n"
+        "    const float* X,\n"
+        "    const float* A,\n"
+        "    const float* B,\n"
+        "    float* Y,\n"
+        "    int d,\n"
+        "    int n,\n"
+        "    cudaStream_t stream);\n"
+        "\n"
+        "torch::Tensor forward(torch::Tensor W, torch::Tensor X, torch::Tensor A, torch::Tensor B) {\n"
+        "    TORCH_CHECK(W.is_cuda(), \"W must be CUDA\");\n"
+        "    TORCH_CHECK(X.is_cuda(), \"X must be CUDA\");\n"
+        "    TORCH_CHECK(A.is_cuda(), \"A must be CUDA\");\n"
+        "    TORCH_CHECK(B.is_cuda(), \"B must be CUDA\");\n"
+        "    TORCH_CHECK(W.scalar_type() == at::kFloat, \"W must be float32\");\n"
+        "    TORCH_CHECK(X.scalar_type() == at::kFloat, \"X must be float32\");\n"
+        "    TORCH_CHECK(A.scalar_type() == at::kFloat, \"A must be float32\");\n"
+        "    TORCH_CHECK(B.scalar_type() == at::kFloat, \"B must be float32\");\n"
+        "    TORCH_CHECK(W.dim() == 2 && X.dim() == 2 && A.dim() == 2 && B.dim() == 2, \"all inputs must be rank-2\");\n"
+        "    const int d = static_cast<int>(W.size(0));\n"
+        "    const int n = static_cast<int>(X.size(1));\n"
+        "    auto Y = torch::empty({d, n}, W.options());\n"
+        "    launch_optimized_lora(\n"
+        "        W.data_ptr<float>(),\n"
+        "        X.data_ptr<float>(),\n"
+        "        A.data_ptr<float>(),\n"
+        "        B.data_ptr<float>(),\n"
+        "        Y.data_ptr<float>(),\n"
+        "        d,\n"
+        "        n,\n"
+        "        static_cast<cudaStream_t>(0));\n"
+        "    cudaError_t err = cudaGetLastError();\n"
+        "    TORCH_CHECK(err == cudaSuccess, cudaGetErrorString(err));\n"
+        "    return Y;\n"
+        "}\n"
+        "\n"
+        "PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {\n"
+        "    m.def(\"forward\", &forward, \"LoRA forward\");\n"
+        "}\n"
+    )
+
+
+def build_torch_extension_candidate_runner(
+    *,
+    wrapper_filename: str = "torch_extension_wrapper.cpp",
+) -> Callable[[GeneratedCandidate, CandidateArtifactPaths, LoadResult, LoraProblemSpec, dict[str, Any], Any], Any]:
+    module_cache: dict[str, Any] = {}
+
+    def runner(
+        candidate: GeneratedCandidate,
+        paths: CandidateArtifactPaths,
+        load_result: LoadResult,
+        spec: LoraProblemSpec,
+        inputs: dict[str, Any],
+        backend: Any,
+    ) -> Any:
+        _ = load_result, spec
+        cache_key = str(paths.source_path.resolve())
+        module = module_cache.get(cache_key)
+        if module is None:
+            try:
+                import torch  # type: ignore
+                from torch.utils.cpp_extension import load  # type: ignore
+            except Exception as exc:
+                raise RuntimeError(f"torch_extension_unavailable:{type(exc).__name__}:{exc}") from exc
+
+            wrapper_path = paths.source_path.parent / wrapper_filename
+            wrapper_path.write_text(_torch_extension_wrapper_source(), encoding="utf-8")
+            build_dir = paths.source_path.parent / "torch_extension_build"
+            build_dir.mkdir(parents=True, exist_ok=True)
+            source_hash = hashlib.sha256(paths.source_path.read_bytes()).hexdigest()[:12]
+            module_name = f"{_torch_extension_module_name(candidate.candidate_id)}_{source_hash}"
+            try:
+                module = load(
+                    name=module_name,
+                    sources=[str(wrapper_path), str(paths.source_path)],
+                    extra_cflags=["-O3"],
+                    extra_cuda_cflags=["-O3", "-std=c++14"],
+                    build_directory=str(build_dir),
+                    verbose=False,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"torch_extension_load_failed:{type(exc).__name__}:{exc}") from exc
+            module_cache[cache_key] = module
+
+        try:
+            output = module.forward(inputs["W"], inputs["X"], inputs["A"], inputs["B"])
+        except Exception as exc:
+            raise RuntimeError(f"torch_extension_forward_failed:{type(exc).__name__}:{exc}") from exc
         synchronize = getattr(backend, "synchronize", None)
         if callable(synchronize):
             synchronize()

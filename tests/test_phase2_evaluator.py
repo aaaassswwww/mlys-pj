@@ -14,6 +14,7 @@ from profiler_agent.phase2.evaluator import (
     build_harness_runtime_evaluator,
     build_nvcc_shared_library_command,
     build_subprocess_runtime_evaluator,
+    build_torch_extension_candidate_runner,
     invoke_launch_optimized_lora,
     load_compiled_candidate,
 )
@@ -278,6 +279,43 @@ class Phase2EvaluatorTests(unittest.TestCase):
         self.assertTrue(backend.synchronized)
         self.assertEqual(fake_symbol.called_args[0].value, 11)
         self.assertEqual(fake_symbol.called_args[7].value, 1234)
+
+    def test_build_torch_extension_candidate_runner_uses_cpp_extension_load(self) -> None:
+        class FakeBackend:
+            def __init__(self) -> None:
+                self.synchronized = False
+
+            def synchronize(self) -> None:
+                self.synchronized = True
+
+        class FakeModule:
+            def forward(self, W, X, A, B):
+                return ("ok", W, X, A, B)
+
+        root = Path("tests/.tmp") / f"phase2_torch_ext_{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            paths = build_candidate_artifact_paths(root, "cand-ext")
+            paths.source_path.write_text("// candidate\n", encoding="utf-8")
+            candidate = GeneratedCandidate(candidate_id="cand-ext", source_code="// candidate\n")
+            backend = FakeBackend()
+            fake_load = Mock(return_value=FakeModule())
+            fake_torch = object()
+            runner = build_torch_extension_candidate_runner()
+            with patch.dict("sys.modules", {"torch": fake_torch, "torch.utils.cpp_extension": Mock(load=fake_load)}):
+                output = runner(
+                    candidate,
+                    paths,
+                    LoadResult(ok=True, library_path=str(paths.library_path), symbol_name="launch_optimized_lora"),
+                    LoraProblemSpec(hidden_dim=8, output_dim=4, num_tokens=3, device="cuda"),
+                    {"W": "w", "X": "x", "A": "a", "B": "b"},
+                    backend,
+                )
+            self.assertEqual(output[0], "ok")
+            self.assertTrue(backend.synchronized)
+            fake_load.assert_called_once()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_subprocess_runtime_evaluator_reads_child_response(self) -> None:
         root = Path("tests/.tmp") / f"phase2_subproc_eval_{uuid4().hex}"

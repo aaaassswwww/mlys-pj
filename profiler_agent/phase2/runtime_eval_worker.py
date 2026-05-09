@@ -6,11 +6,11 @@ from pathlib import Path
 
 from profiler_agent.phase2.evaluator import (
     CandidateArtifactPaths,
-    build_ctypes_candidate_runner,
     build_harness_runtime_evaluator,
-    load_compiled_candidate,
+    build_torch_extension_candidate_runner,
 )
 from profiler_agent.phase2.models import GeneratedCandidate, LoraProblemSpec
+from profiler_agent.phase2.models import LoadResult
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,16 +56,15 @@ def main() -> int:
         source_path=args.request.parent / "optimized_lora.cu",
         library_path=library_path,
     )
-    load_result = load_compiled_candidate(library_path)
     runtime = build_harness_runtime_evaluator(
         problem_specs=problem_specs,
-        candidate_runner=build_ctypes_candidate_runner(),
+        candidate_runner=build_torch_extension_candidate_runner(),
         warmup_runs=warmup_runs,
         measured_runs=measured_runs,
         rtol=rtol,
         atol=atol,
     )
-    evaluation = runtime(candidate, paths, load_result)
+    evaluation = runtime(candidate, paths, LoadResult(ok=True, library_path=str(library_path), symbol_name="launch_optimized_lora"))
     args.response.write_text(json.dumps(evaluation.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
     return 0
 
