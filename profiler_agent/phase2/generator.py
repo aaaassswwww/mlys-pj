@@ -266,7 +266,71 @@ def _apply_programmatic_mutation(source_code: str, *, plan_id: str) -> tuple[str
 
 
 def build_bootstrap_lora_source() -> str:
-    return build_reference_safe_cublas_source(use_tf32_math=True)
+    return build_reference_safe_aten_source(bt_contiguous=True, addmm_mode="inplace")
+
+
+def build_reference_safe_aten_source(
+    *,
+    bt_contiguous: bool,
+    addmm_mode: str,
+) -> str:
+    bt_expr = "B_t.transpose(0, 1).contiguous()" if bt_contiguous else "B_t.transpose(0, 1)"
+    if addmm_mode == "out":
+        addmm_block = (
+            "    auto wx = torch::matmul(W_t, X_t);\n"
+            "    at::addmm_out(Y_t, wx, A_t, temp, 1.0, 1.0);\n"
+        )
+    elif addmm_mode == "functional":
+        addmm_block = (
+            "    auto wx = torch::matmul(W_t, X_t);\n"
+            "    auto out = torch::addmm(wx, A_t, temp, 1.0, 1.0);\n"
+            "    Y_t.copy_(out);\n"
+        )
+    else:
+        addmm_block = (
+            "    auto out = torch::matmul(W_t, X_t);\n"
+            "    out.addmm_(A_t, temp, 1.0, 1.0);\n"
+            "    Y_t.copy_(out);\n"
+        )
+    return (
+        "#include <torch/extension.h>\n"
+        "#include <ATen/ATen.h>\n"
+        "#include <cuda_runtime.h>\n"
+        "\n"
+        "namespace {\n"
+        "constexpr int RANK = 16;\n"
+        "\n"
+        "inline torch::Tensor view_cuda_f32(const float* ptr, int rows, int cols) {\n"
+        "    auto opts = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);\n"
+        "    return torch::from_blob(const_cast<float*>(ptr), {rows, cols}, opts);\n"
+        "}\n"
+        "}  // namespace\n"
+        "\n"
+        "extern \"C\" void launch_optimized_lora(\n"
+        "    const float* W,\n"
+        "    const float* X,\n"
+        "    const float* A,\n"
+        "    const float* B,\n"
+        "    float* Y,\n"
+        "    int d,\n"
+        "    int n,\n"
+        "    cudaStream_t stream) {\n"
+        "    (void)stream;\n"
+        "    if (W == nullptr || X == nullptr || A == nullptr || B == nullptr || Y == nullptr) {\n"
+        "        return;\n"
+        "    }\n"
+        "    if (d <= 0 || n <= 0) {\n"
+        "        return;\n"
+        "    }\n"
+        "    auto W_t = view_cuda_f32(W, d, d);\n"
+        "    auto X_t = view_cuda_f32(X, d, n);\n"
+        "    auto A_t = view_cuda_f32(A, d, RANK);\n"
+        "    auto B_t = view_cuda_f32(B, d, RANK);\n"
+        "    auto Y_t = view_cuda_f32(Y, d, n);\n"
+        f"    auto temp = torch::matmul({bt_expr}, X_t);\n"
+        f"{addmm_block}"
+        "}\n"
+    )
 
 
 def build_reference_safe_cublas_source(*, use_tf32_math: bool) -> str:
@@ -667,6 +731,108 @@ def _is_cublas_candidate_signature(*, candidate_id: str | None = None, source_co
     return False
 
 
+def _is_aten_middle_route_candidate_signature(*, candidate_id: str | None = None, source_code: str | None = None) -> bool:
+    if isinstance(candidate_id, str):
+        lowered_id = candidate_id.lower()
+        if lowered_id.startswith("aten-") or "aten_" in lowered_id or "cublas-all-gemm-tf32" in lowered_id:
+            return True
+    if isinstance(source_code, str):
+        lowered = source_code.lower()
+        if "#include <torch/extension.h>" in lowered or "torch::matmul" in lowered or "addmm_" in lowered:
+            return True
+    return False
+
+
+def _speedup_aten_search_space() -> list[dict[str, Any]]:
+    return [
+        {"name": "aten_inplace_addmm_bt_contiguous", "bt_contiguous": True, "addmm_mode": "inplace"},
+        {"name": "aten_out_addmm_bt_contiguous", "bt_contiguous": True, "addmm_mode": "out"},
+        {"name": "aten_functional_addmm_bt_contiguous", "bt_contiguous": True, "addmm_mode": "functional"},
+        {"name": "aten_inplace_addmm_bt_view", "bt_contiguous": False, "addmm_mode": "inplace"},
+        {"name": "aten_out_addmm_bt_view", "bt_contiguous": False, "addmm_mode": "out"},
+    ]
+
+
+def _build_speedup_aten_candidate(*, state: Phase2OptimizerState, iteration: int) -> GeneratedCandidate:
+    prior_speedup_candidates = [
+        item
+        for item in state.llm_revision_history
+        if isinstance(item, dict)
+        and isinstance(item.get("candidate_id"), str)
+        and (_is_aten_middle_route_candidate_signature(candidate_id=str(item.get("candidate_id"))))
+    ]
+    configs = _speedup_aten_search_space()
+    config = configs[len(prior_speedup_candidates) % len(configs)]
+    candidate_id = f"{config['name']}-v{iteration:02d}"
+    return GeneratedCandidate(
+        candidate_id=candidate_id,
+        source_code=build_reference_safe_aten_source(
+            bt_contiguous=bool(config["bt_contiguous"]),
+            addmm_mode=str(config["addmm_mode"]),
+        ),
+        rationale=(
+            "deterministic middle-route speedup candidate: keep the implementation inside the "
+            "ATen/PyTorch extension contract, vary B^T contiguity and addmm style, and avoid raw cuBLAS symbols"
+        ),
+        source="deterministic_speedup_middle_route",
+    )
+
+
+def _should_force_speedup_aten_family(
+    *,
+    state: Phase2OptimizerState,
+) -> bool:
+    if state.current_best_correct_candidate_id is None:
+        return False
+    return _is_aten_middle_route_candidate_signature(
+        candidate_id=state.current_best_correct_candidate_id,
+        source_code=state.current_best_source_code,
+    )
+
+
+def _build_reference_safe_aten_candidate(*, iteration: int) -> GeneratedCandidate:
+    configs = _speedup_aten_search_space()
+    config = configs[(max(0, iteration - 1)) % len(configs)]
+    return GeneratedCandidate(
+        candidate_id=f"{config['name']}-v{iteration:02d}",
+        source_code=build_reference_safe_aten_source(
+            bt_contiguous=bool(config["bt_contiguous"]),
+            addmm_mode=str(config["addmm_mode"]),
+        ),
+        rationale=(
+            "deterministic correctness-safe middle-route candidate that keeps the large matmuls in the "
+            "ATen/PyTorch extension path instead of using raw cuBLAS symbols"
+        ),
+        source="deterministic_reference_safe",
+    )
+
+
+def _should_force_reference_safe_aten_family(
+    *,
+    state: Phase2OptimizerState,
+    feedback: dict[str, Any] | None,
+) -> bool:
+    if state.current_best_correct_candidate_id is not None:
+        return False
+    if state.iteration == 1:
+        return True
+    if not isinstance(feedback, dict):
+        return False
+    previous_candidate = feedback.get("previous_candidate")
+    if isinstance(previous_candidate, dict):
+        if _is_aten_middle_route_candidate_signature(
+            candidate_id=previous_candidate.get("candidate_id"),
+            source_code=previous_candidate.get("source_code"),
+        ):
+            return True
+    if _is_aten_middle_route_candidate_signature(
+        candidate_id=state.current_best_candidate_id,
+        source_code=state.current_best_source_code,
+    ):
+        return True
+    return False
+
+
 def _speedup_rank16_search_space() -> list[dict[str, Any]]:
     return [
         {"name": "rank16-scalar-b128", "block_size": 128, "vector_width": 1, "shape_dispatch": False},
@@ -783,9 +949,9 @@ class LoraCandidateGenerator:
 
     def bootstrap_candidate(self) -> GeneratedCandidate:
         return GeneratedCandidate(
-            candidate_id="bootstrap-cublas-safe",
+            candidate_id="bootstrap-aten-safe",
             source_code=build_bootstrap_lora_source(),
-            rationale="correctness-safe bootstrap using cuBLAS for the large GEMMs and a simple rank-16 update accumulation path",
+            rationale="correctness-safe bootstrap using the ATen/PyTorch extension path for the large matmuls",
             source="bootstrap_template",
         )
 
@@ -914,22 +1080,22 @@ class LoraCandidateGenerator:
             )
             return candidate
 
-        if _should_force_speedup_rank16_family(state=state):
-            candidate = _build_speedup_rank16_candidate(state=state, iteration=state.iteration)
+        if _should_force_speedup_aten_family(state=state):
+            candidate = _build_speedup_aten_candidate(state=state, iteration=state.iteration)
             self._write_generation_debug(
                 iteration=state.iteration,
-                payload={"mode": "deterministic_speedup_rank16_family"},
-                fallback_reason="deterministic_speedup_rank16_family_locked",
+                payload={"mode": "deterministic_speedup_middle_route_family"},
+                fallback_reason="deterministic_speedup_middle_route_family_locked",
                 candidate=candidate,
             )
             return candidate
 
-        if _should_force_reference_safe_cublas_family(state=state, feedback=feedback):
-            candidate = _build_reference_safe_cublas_candidate(iteration=state.iteration)
+        if _should_force_reference_safe_aten_family(state=state, feedback=feedback):
+            candidate = _build_reference_safe_aten_candidate(iteration=state.iteration)
             self._write_generation_debug(
                 iteration=state.iteration,
-                payload={"mode": "deterministic_reference_safe_family_locked"},
-                fallback_reason="deterministic_reference_safe_family_locked",
+                payload={"mode": "deterministic_reference_safe_middle_route_family_locked"},
+                fallback_reason="deterministic_reference_safe_middle_route_family_locked",
                 candidate=candidate,
             )
             return candidate

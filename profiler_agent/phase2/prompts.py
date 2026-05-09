@@ -559,6 +559,7 @@ def build_lora_generation_user_prompt(
         strategy_specific_guidance = [
             "The runtime environment indicates that PyTorch matmul is using a TF32-friendly path.",
             "Prefer correctness-safe families that keep the large GEMMs on cuBLAS-compatible paths and only customize the smaller rank-16 update or staging logic.",
+            "Prefer ATen/PyTorch extension backed matmul or addmm paths over raw cuBLAS C API calls when possible, because they are safer under the final submission toolchain.",
             "Do not keep reproducing the same naive float32 loop order; that has already been shown to match the naive reference instead of the PyTorch reference.",
             "Do not revert to a fully plain-float32 two-kernel baseline that removes all reduced-precision or tf32-like behavior from every stage; that fallback path has already been explored and is not the target direction.",
             "Do not treat half precision as equivalent to TF32.",
@@ -583,6 +584,7 @@ def build_lora_generation_user_prompt(
             "Prefer local performance improvements such as safer launch changes, memory-access cleanup, or low-risk staging improvements.",
             "Keep the current best correct candidate as the primary revision base unless there is a specific measured reason to change strategy.",
             "Do not leave the current correct candidate family; preserve the same correctness-safe cuBLAS family and only optimize engineering details around it.",
+            "If the current correct family is ATen-backed, stay inside the ATen/PyTorch extension path and optimize operator choice, contiguity, and inplace/out variants before introducing lower-level custom numerics.",
             "Prefer changes such as handle reuse, workspace reuse, buffer lifetime management, pointer-mode cleanup, stream-safe caching, and early-return fast paths.",
             "Do not re-open numeric-path exploration after correctness has passed; avoid changing GEMM semantics, accumulation precision, or reduced-precision approximations unless there is a clear measured need and correctness is preserved.",
             "If a speculative speedup family starts failing correctness repeatedly, immediately fall back to the last known-correct family and continue with lower-risk engineering optimizations there.",

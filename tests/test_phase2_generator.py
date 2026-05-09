@@ -17,9 +17,9 @@ class Phase2GeneratorTests(unittest.TestCase):
         generator = LoraCandidateGenerator(llm_client=None)
         candidate = generator.bootstrap_candidate()
         self.assertEqual(candidate.source, "bootstrap_template")
-        self.assertIn("#include <cublas_v2.h>", candidate.source_code)
-        self.assertIn("cublasGemmEx", candidate.source_code)
-        self.assertIn("CUBLAS_COMPUTE_32F_FAST_TF32", candidate.source_code)
+        self.assertIn("#include <torch/extension.h>", candidate.source_code)
+        self.assertIn("torch::matmul", candidate.source_code)
+        self.assertIn("addmm_", candidate.source_code)
         self.assertIn("launch_optimized_lora", candidate.source_code)
 
     def test_generate_candidate_uses_deterministic_reference_safe_seed_on_first_iteration(self) -> None:
@@ -28,8 +28,8 @@ class Phase2GeneratorTests(unittest.TestCase):
         generator = LoraCandidateGenerator(llm_client=mock_llm)
         candidate = generator.generate_candidate(state=Phase2OptimizerState(iteration=1), feedback=None)
         self.assertEqual(candidate.source, "deterministic_reference_safe")
-        self.assertIn("#include <cublas_v2.h>", candidate.source_code)
-        self.assertIn("cublasGemmEx", candidate.source_code)
+        self.assertIn("#include <torch/extension.h>", candidate.source_code)
+        self.assertIn("torch::matmul", candidate.source_code)
         mock_llm.complete_json.assert_not_called()
 
     def test_generate_candidate_switches_to_deterministic_speedup_family_after_correctness(self) -> None:
@@ -37,11 +37,10 @@ class Phase2GeneratorTests(unittest.TestCase):
         mock_llm.is_enabled.return_value = True
         state = Phase2OptimizerState(
             iteration=16,
-            current_best_candidate_id="all-gemm-cublas-safe-tf32-v13",
-            current_best_correct_candidate_id="all-gemm-cublas-safe-tf32-v13",
+            current_best_candidate_id="aten_inplace_addmm_bt_contiguous-v13",
+            current_best_correct_candidate_id="aten_inplace_addmm_bt_contiguous-v13",
             current_best_source_code=(
-                "#include <cuda_runtime.h>\n"
-                "#include <cublas_v2.h>\n"
+                "#include <torch/extension.h>\n"
                 'extern "C" void launch_optimized_lora(const float* W, const float* X, const float* A, const float* B, float* Y, int d, int n, cudaStream_t stream) {}\n'
             ),
             current_best_source="deterministic_reference_safe",
@@ -51,10 +50,10 @@ class Phase2GeneratorTests(unittest.TestCase):
             state=state,
             feedback={"correctness": {"passed": True, "rel_l2_err": 0.0, "max_abs_err": 0.0}},
         )
-        self.assertEqual(candidate.source, "deterministic_speedup_family")
-        self.assertIn("cublas-rank16-update-", candidate.candidate_id)
-        self.assertIn("rank16_add_scalar_kernel", candidate.source_code)
-        self.assertNotIn("float* delta", candidate.source_code)
+        self.assertEqual(candidate.source, "deterministic_speedup_middle_route")
+        self.assertIn("aten_", candidate.candidate_id)
+        self.assertIn("torch::matmul", candidate.source_code)
+        self.assertTrue(("addmm_" in candidate.source_code) or ("addmm_out" in candidate.source_code))
         mock_llm.complete_json.assert_not_called()
 
     def test_generate_candidate_stops_forcing_rank16_speedup_family_after_repeated_failures(self) -> None:
