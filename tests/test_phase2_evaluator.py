@@ -244,7 +244,7 @@ class Phase2EvaluatorTests(unittest.TestCase):
             LoadResult(ok=True, library_path="x", symbol_name="launch_optimized_lora"),
         )
         self.assertFalse(evaluation.correctness.passed)
-        self.assertIn("candidate_runner_error:hidden_dim=8:RuntimeError", evaluation.notes)
+        self.assertTrue(any(note.startswith("candidate_runner_error:hidden_dim=8:RuntimeError:boom") for note in evaluation.notes))
 
     def test_harness_runtime_evaluator_converts_fatal_cuda_error_to_failure_result(self) -> None:
         specs = [LoraProblemSpec(hidden_dim=8, output_dim=4, num_tokens=3, device="cpu")]
@@ -266,7 +266,7 @@ class Phase2EvaluatorTests(unittest.TestCase):
             LoadResult(ok=True, library_path="x", symbol_name="launch_optimized_lora"),
         )
         self.assertFalse(evaluation.correctness.passed)
-        self.assertIn("fatal_cuda_runtime_error:hidden_dim=8:RuntimeError", evaluation.notes)
+        self.assertTrue(any(note.startswith("fatal_cuda_runtime_error:hidden_dim=8:RuntimeError:CUDA error: an illegal memory access was encountered") for note in evaluation.notes))
 
     def test_build_ctypes_candidate_runner_invokes_exported_symbol(self) -> None:
         class FakeTensor:

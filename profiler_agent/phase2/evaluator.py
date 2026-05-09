@@ -82,6 +82,11 @@ def _runtime_failure_evaluation(
     )
 
 
+def _exception_note(prefix: str, *, spec: LoraProblemSpec, exc: Exception) -> str:
+    detail = tail_text(str(exc) or type(exc).__name__, 240).replace("\n", " ").replace("\r", " ")
+    return f"{prefix}:hidden_dim={spec.hidden_dim}:{type(exc).__name__}:{detail}"
+
+
 def _subprocess_timeout_seconds() -> int:
     raw = str(os.environ.get("PROFILER_AGENT_PHASE2_SUBPROCESS_TIMEOUT_SECONDS", "")).strip()
     if not raw:
@@ -623,9 +628,9 @@ def build_harness_runtime_evaluator(
                 reference_output = ref_runner(inputs, runtime_backend)
             except Exception as exc:
                 if _looks_like_fatal_cuda_runtime_error(exc):
-                    notes.append(f"fatal_cuda_runtime_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                    notes.append(_exception_note("fatal_cuda_runtime_error", spec=spec, exc=exc))
                 else:
-                    notes.append(f"runtime_environment_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                    notes.append(_exception_note("runtime_environment_error", spec=spec, exc=exc))
                 return _runtime_failure_evaluation(
                     candidate_id=candidate.candidate_id,
                     notes=notes,
@@ -636,9 +641,9 @@ def build_harness_runtime_evaluator(
                 student_output = candidate_runner(candidate, paths, load_result, spec, inputs, runtime_backend)
             except Exception as exc:
                 if _looks_like_fatal_cuda_runtime_error(exc):
-                    notes.append(f"fatal_cuda_runtime_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                    notes.append(_exception_note("fatal_cuda_runtime_error", spec=spec, exc=exc))
                 else:
-                    notes.append(f"candidate_runner_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                    notes.append(_exception_note("candidate_runner_error", spec=spec, exc=exc))
                 return _runtime_failure_evaluation(
                     candidate_id=candidate.candidate_id,
                     notes=notes,
@@ -655,9 +660,9 @@ def build_harness_runtime_evaluator(
                 )
             except Exception as exc:
                 if _looks_like_fatal_cuda_runtime_error(exc):
-                    notes.append(f"fatal_cuda_runtime_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                    notes.append(_exception_note("fatal_cuda_runtime_error", spec=spec, exc=exc))
                 else:
-                    notes.append(f"correctness_check_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                    notes.append(_exception_note("correctness_check_error", spec=spec, exc=exc))
                 return _runtime_failure_evaluation(
                     candidate_id=candidate.candidate_id,
                     notes=notes,
@@ -715,9 +720,9 @@ def build_harness_runtime_evaluator(
                 )
             except Exception as exc:
                 if _looks_like_fatal_cuda_runtime_error(exc):
-                    notes.append(f"fatal_cuda_runtime_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                    notes.append(_exception_note("fatal_cuda_runtime_error", spec=spec, exc=exc))
                 else:
-                    notes.append(f"benchmark_error:hidden_dim={spec.hidden_dim}:{type(exc).__name__}")
+                    notes.append(_exception_note("benchmark_error", spec=spec, exc=exc))
                 return _runtime_failure_evaluation(
                     candidate_id=candidate.candidate_id,
                     notes=notes,
