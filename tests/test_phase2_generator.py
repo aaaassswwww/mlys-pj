@@ -579,7 +579,11 @@ class Phase2GeneratorTests(unittest.TestCase):
         )
         self.assertIn('"optimization_priority": "speedup_after_correctness"', prompt)
         self.assertIn('"candidate_strategy": "speedup_preserve_correctness"', prompt)
+        self.assertIn('"revision_source_preference": "current_best_correct_candidate"', prompt)
+        self.assertIn('"patch_discipline": "strict_speedup_lock"', prompt)
+        self.assertIn('"correct_family_candidate": {', prompt)
         self.assertIn("preserve its numerical behavior and optimize speed cautiously", prompt)
+        self.assertIn("Do not leave the current correct candidate family", prompt)
 
     def test_user_prompt_tf32_strategy_mentions_balanced_multi_dim_behavior(self) -> None:
         prompt = build_lora_generation_user_prompt(

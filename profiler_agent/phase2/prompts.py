@@ -509,15 +509,29 @@ def build_lora_generation_user_prompt(
             "selection_reason": "best_candidate_measured_closer_to_torch_reference",
             "best_reference_rel_l2_err": state.best_reference_rel_l2_err,
         }
+    correct_family_candidate: dict[str, Any] = {}
+    if state.current_best_correct_candidate_id and state.current_best_source_code:
+        correct_family_candidate = {
+            "candidate_id": state.current_best_correct_candidate_id,
+            "source": state.current_best_source or "unknown",
+            "rationale": state.current_best_rationale,
+            "source_code": state.current_best_source_code,
+            "selection_reason": "best_correct_candidate_speedup_anchor",
+            "best_speedup": state.best_speedup,
+        }
     revision_source_preference = "base_candidate"
     if candidate_strategy == "fit_torch_tf32_reference" and reference_like_candidate:
         revision_source_preference = "reference_like_candidate"
     previous_compile_ok = bool(feedback.get("compile_ok")) if isinstance(feedback, dict) else False
     if previous_candidate and previous_compile_ok and not previous_correctness_passed:
         revision_source_preference = "previous_candidate_patch_first"
+    if candidate_strategy == "speedup_preserve_correctness" and correct_family_candidate:
+        revision_source_preference = "current_best_correct_candidate"
     patch_discipline = "normal"
     if isinstance(stable_patch_family, dict):
         patch_discipline = "strict_local_patch"
+    if candidate_strategy == "speedup_preserve_correctness" and correct_family_candidate:
+        patch_discipline = "strict_speedup_lock"
     local_mutation_axes = _build_local_mutation_axes(
         candidate_strategy=candidate_strategy,
         patch_discipline=patch_discipline,
@@ -568,6 +582,9 @@ def build_lora_generation_user_prompt(
             "Do not make broad numeric-path changes that could lose correctness.",
             "Prefer local performance improvements such as safer launch changes, memory-access cleanup, or low-risk staging improvements.",
             "Keep the current best correct candidate as the primary revision base unless there is a specific measured reason to change strategy.",
+            "Do not leave the current correct candidate family; preserve the same correctness-safe cuBLAS family and only optimize engineering details around it.",
+            "Prefer changes such as handle reuse, workspace reuse, buffer lifetime management, pointer-mode cleanup, stream-safe caching, and early-return fast paths.",
+            "Do not re-open numeric-path exploration after correctness has passed; avoid changing GEMM semantics, accumulation precision, or reduced-precision approximations unless there is a clear measured need and correctness is preserved.",
         ]
     focus_hidden_dim: int | None = None
     if isinstance(reference_diagnosis, dict):
@@ -602,6 +619,7 @@ def build_lora_generation_user_prompt(
         "per_spec_feedback": per_spec_feedback,
         "previous_candidate": previous_candidate,
         "base_candidate": base_candidate,
+        "correct_family_candidate": correct_family_candidate,
         "reference_like_candidate": reference_like_candidate,
         "constraints": {
             "single_file_output": True,
@@ -649,6 +667,8 @@ def build_lora_generation_user_prompt(
                 "in guided_local_enumeration mode, preserve the previous candidate skeleton and translate only the listed axis changes into code edits",
                 "prefer a mutation that can be described as a narrow toggle on the previous candidate rather than a fresh rewrite",
                 "treat the preferred revision source candidate as the starting point and revise it instead of discarding it",
+                "once correctness is passing, lock onto the current best correct candidate family and preserve its numerical semantics",
+                "after correctness passes, do not switch to a new candidate family or reopen numeric-path correctness search",
                 "preserve working ABI, indexing structure, and any already-correct math unless you have a specific reason to change them",
                 "make the smallest set of changes that can plausibly improve correctness toward the reference",
                 "if one hidden_dim is clearly worse than the others, use it as a diagnostic hint, but do not overfit to it at the expense of the other tested hidden_dims",

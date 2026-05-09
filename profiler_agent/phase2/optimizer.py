@@ -62,6 +62,25 @@ def _normalize_iteration_limit(max_iterations: int | None) -> int | None:
     return 2
 
 
+def _phase2_speedup_iteration_target() -> int:
+    raw = str(os.environ.get("PROFILER_AGENT_PHASE2_SPEEDUP_ITERATIONS", "")).strip()
+    if not raw:
+        return 30
+    try:
+        value = int(raw)
+    except ValueError:
+        return 30
+    return max(1, value)
+
+
+def _active_iteration_limit(base_limit: int | None, state: Phase2OptimizerState) -> int | None:
+    if base_limit is None:
+        return None
+    if state.current_best_correct_candidate_id is None:
+        return base_limit
+    return max(base_limit, _phase2_speedup_iteration_target())
+
+
 @dataclass(frozen=True)
 class Phase2OptimizationResult:
     best_candidate_id: str | None
@@ -103,8 +122,9 @@ def run_phase2_optimization(
 
         iteration = 1
         while True:
-            if effective_max_iterations is not None and iteration > effective_max_iterations:
-                state.stop_reason = f"max_iterations_reached:{effective_max_iterations}"
+            active_iteration_limit = _active_iteration_limit(effective_max_iterations, state)
+            if active_iteration_limit is not None and iteration > active_iteration_limit:
+                state.stop_reason = f"max_iterations_reached:{active_iteration_limit}"
                 break
             should_stop, stop_reason = _should_stop_before_next_iteration()
             if should_stop:

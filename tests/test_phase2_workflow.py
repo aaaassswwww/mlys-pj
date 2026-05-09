@@ -42,21 +42,26 @@ class Phase2WorkflowTests(unittest.TestCase):
                     output_path=str(library_path),
                 )
 
-            with patch("profiler_agent.phase2.evaluator.compile_candidate_source", side_effect=fake_compile):
-                with patch(
-                    "profiler_agent.phase2.evaluator.load_compiled_candidate",
-                    return_value=LoadResult(ok=True, library_path="fake.dll", symbol_name="launch_optimized_lora"),
-                ):
-                    result = run_default_phase2_workflow(
-                        root_dir=root,
-                        max_iterations=2,
-                        llm_client=mock_llm,
-                        problem_specs=default_problem_specs(hidden_dims=[8, 12], num_tokens=3, device="cpu"),
-                        candidate_runner=candidate_runner,
-                        backend=PythonListBackend(),
-                        warmup_runs=0,
-                        measured_runs=2,
-                    )
+            with patch.dict("os.environ", {"PROFILER_AGENT_PHASE2_SPEEDUP_ITERATIONS": "2"}, clear=False):
+                with patch("profiler_agent.phase2.evaluator.compile_candidate_source", side_effect=fake_compile):
+                    with patch(
+                        "profiler_agent.phase2.evaluator.load_compiled_candidate",
+                        return_value=LoadResult(ok=True, library_path="fake.dll", symbol_name="launch_optimized_lora"),
+                    ):
+                        result = run_default_phase2_workflow(
+                            root_dir=root,
+                            max_iterations=2,
+                            llm_client=mock_llm,
+                            problem_specs=default_problem_specs(hidden_dims=[8, 12], num_tokens=3, device="cpu"),
+                            candidate_runner=candidate_runner,
+                            backend=PythonListBackend(),
+                            warmup_runs=0,
+                            measured_runs=2,
+                        )
+                        self.assertEqual(
+                            os.environ.get("PROFILER_AGENT_LLM_DEBUG_PATH"),
+                            str(root / ".agent_artifacts" / "phase2_llm_debug.jsonl"),
+                        )
 
             self.assertTrue((root / "optimized_lora.cu").exists())
             self.assertTrue((root / ".agent_artifacts" / "phase2_state.json").exists())
@@ -71,10 +76,6 @@ class Phase2WorkflowTests(unittest.TestCase):
             self.assertGreaterEqual(report_json["candidate_history_count"], 2)
             self.assertIn("recent_candidates", report_json)
             self.assertTrue((root / ".agent_artifacts" / "phase2_codegen_debug").exists())
-            self.assertEqual(
-                os.environ.get("PROFILER_AGENT_LLM_DEBUG_PATH"),
-                str(root / ".agent_artifacts" / "phase2_llm_debug.jsonl"),
-            )
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
