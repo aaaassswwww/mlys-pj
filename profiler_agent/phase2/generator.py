@@ -292,23 +292,23 @@ def build_reference_safe_aten_source(
     bt_contiguous: bool,
     addmm_mode: str,
 ) -> str:
-    bt_expr = "B_t.transpose(0, 1).contiguous()" if bt_contiguous else "B_t.transpose(0, 1)"
+    bt_expr = "B.transpose(0, 1).contiguous()" if bt_contiguous else "B.transpose(0, 1)"
     if addmm_mode == "out":
         addmm_block = (
-            "    auto Y_t = torch::empty({W_t.size(0), X_t.size(1)}, W_t.options());\n"
-            "    auto wx = torch::matmul(W_t, X_t);\n"
-            "    at::addmm_out(Y_t, wx, A_t, temp, 1.0, 1.0);\n"
+            "    auto Y_t = torch::empty({W.size(0), X.size(1)}, W.options());\n"
+            "    auto wx = torch::matmul(W, X);\n"
+            "    at::addmm_out(Y_t, wx, A, temp, 1.0, 1.0);\n"
             "    return Y_t;\n"
         )
     elif addmm_mode == "functional":
         addmm_block = (
-            "    auto wx = torch::matmul(W_t, X_t);\n"
-            "    return torch::addmm(wx, A_t, temp, 1.0, 1.0);\n"
+            "    auto wx = torch::matmul(W, X);\n"
+            "    return torch::addmm(wx, A, temp, 1.0, 1.0);\n"
         )
     else:
         addmm_block = (
-            "    auto out = torch::matmul(W_t, X_t);\n"
-            "    out.addmm_(A_t, temp, 1.0, 1.0);\n"
+            "    auto out = torch::matmul(W, X);\n"
+            "    out.addmm_(A, temp, 1.0, 1.0);\n"
             "    return out;\n"
         )
     return (
@@ -321,24 +321,12 @@ def build_reference_safe_aten_source(
         "}  // namespace\n"
         "\n"
         "torch::Tensor forward(torch::Tensor W, torch::Tensor X, torch::Tensor A, torch::Tensor B) {\n"
-        "    TORCH_CHECK(W.is_cuda(), \"W must be CUDA\");\n"
-        "    TORCH_CHECK(X.is_cuda(), \"X must be CUDA\");\n"
-        "    TORCH_CHECK(A.is_cuda(), \"A must be CUDA\");\n"
-        "    TORCH_CHECK(B.is_cuda(), \"B must be CUDA\");\n"
-        "    TORCH_CHECK(W.scalar_type() == at::kFloat, \"W must be float32\");\n"
-        "    TORCH_CHECK(X.scalar_type() == at::kFloat, \"X must be float32\");\n"
-        "    TORCH_CHECK(A.scalar_type() == at::kFloat, \"A must be float32\");\n"
-        "    TORCH_CHECK(B.scalar_type() == at::kFloat, \"B must be float32\");\n"
         "    TORCH_CHECK(W.dim() == 2 && X.dim() == 2 && A.dim() == 2 && B.dim() == 2, \"all inputs must be rank-2\");\n"
         "    TORCH_CHECK(W.size(0) == W.size(1), \"W must be square\");\n"
         "    TORCH_CHECK(X.size(0) == W.size(1), \"X rows must match W columns\");\n"
         "    TORCH_CHECK(A.size(0) == W.size(0) && A.size(1) == RANK, \"A must be [d, 16]\");\n"
         "    TORCH_CHECK(B.size(0) == W.size(0) && B.size(1) == RANK, \"B must be [d, 16]\");\n"
-        "    auto W_t = W.contiguous();\n"
-        "    auto X_t = X.contiguous();\n"
-        "    auto A_t = A.contiguous();\n"
-        "    auto B_t = B.contiguous();\n"
-        f"    auto temp = torch::matmul({bt_expr}, X_t);\n"
+        f"    auto temp = torch::matmul({bt_expr}, X);\n"
         f"{addmm_block}"
         "}\n"
         "\n"
@@ -814,12 +802,15 @@ def _focused_speedup_aten_search_space(state: Phase2OptimizerState) -> list[dict
     if bt_contiguous is None or addmm_mode is None:
         return _speedup_aten_search_space()
 
-    if addmm_mode == "out":
-        modes = ["inplace"]
-    elif addmm_mode == "inplace":
-        modes = ["out"]
+    if not bt_contiguous:
+        modes = ["inplace"] if addmm_mode != "inplace" else ["inplace"]
     else:
-        modes = ["out", "inplace"]
+        if addmm_mode == "out":
+            modes = ["inplace"]
+        elif addmm_mode == "inplace":
+            modes = ["out"]
+        else:
+            modes = ["out", "inplace"]
 
     return [
         {

@@ -94,12 +94,50 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertNotIn("functional_addmm", candidate.candidate_id)
         mock_llm.complete_json.assert_not_called()
 
+    def test_generate_candidate_locks_bt_view_speedup_search_to_inplace_only(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        state = Phase2OptimizerState(
+            iteration=10,
+            current_best_candidate_id="aten_inplace_addmm_bt_view-v04",
+            current_best_correct_candidate_id="aten_inplace_addmm_bt_view-v04",
+            current_best_source_code=(
+                "#include <torch/extension.h>\n"
+                "torch::Tensor forward(torch::Tensor W, torch::Tensor X, torch::Tensor A, torch::Tensor B) {\n"
+                "  auto temp = torch::matmul(B.transpose(0, 1), X);\n"
+                "  auto out = torch::matmul(W, X);\n"
+                "  out.addmm_(A, temp, 1.0, 1.0);\n"
+                "  return out;\n"
+                "}\n"
+                "PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def(\"forward\", &forward); }\n"
+            ),
+            current_best_source="deterministic_speedup_middle_route",
+        )
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(
+            state=state,
+            feedback={"correctness": {"passed": True, "rel_l2_err": 0.0, "max_abs_err": 0.0}},
+        )
+        self.assertTrue(candidate.candidate_id.startswith("aten_inplace_addmm_bt_view-v"))
+        mock_llm.complete_json.assert_not_called()
+
     def test_bootstrap_aten_template_avoids_extra_copy_for_inplace_path(self) -> None:
         generator = LoraCandidateGenerator(llm_client=None)
         candidate = generator.bootstrap_candidate()
         self.assertNotIn("copy_(", candidate.source_code)
         self.assertNotIn("auto Y_t = torch::empty", candidate.source_code)
         self.assertIn("return out;", candidate.source_code)
+
+    def test_bootstrap_aten_template_avoids_unnecessary_contiguous_and_type_checks(self) -> None:
+        generator = LoraCandidateGenerator(llm_client=None)
+        candidate = generator.bootstrap_candidate()
+        self.assertNotIn("W.contiguous()", candidate.source_code)
+        self.assertNotIn("X.contiguous()", candidate.source_code)
+        self.assertNotIn("A.contiguous()", candidate.source_code)
+        self.assertNotIn("B.contiguous()", candidate.source_code)
+        self.assertNotIn("scalar_type()", candidate.source_code)
+        self.assertNotIn("is_cuda()", candidate.source_code)
+        self.assertIn("torch::matmul(B.transpose(0, 1).contiguous(), X)", candidate.source_code)
 
     def test_generate_candidate_stops_forcing_rank16_speedup_family_after_repeated_failures(self) -> None:
         mock_llm = Mock()
