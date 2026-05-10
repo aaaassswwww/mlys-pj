@@ -57,6 +57,42 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertIn("PYBIND11_MODULE(TORCH_EXTENSION_NAME", candidate.source_code)
         mock_llm.complete_json.assert_not_called()
 
+    def test_generate_candidate_focuses_aten_speedup_search_on_same_bt_shape_as_best_correct(self) -> None:
+        mock_llm = Mock()
+        mock_llm.is_enabled.return_value = True
+        state = Phase2OptimizerState(
+            iteration=9,
+            current_best_candidate_id="aten_out_addmm_bt_view-v05",
+            current_best_correct_candidate_id="aten_out_addmm_bt_view-v05",
+            current_best_source_code=(
+                "#include <torch/extension.h>\n"
+                "torch::Tensor forward(torch::Tensor W, torch::Tensor X, torch::Tensor A, torch::Tensor B) {\n"
+                "  auto temp = torch::matmul(B.transpose(0, 1), X);\n"
+                "  auto wx = torch::matmul(W, X);\n"
+                "  auto y = torch::addmm(wx, A, temp, 1.0, 1.0);\n"
+                "  return y;\n"
+                "}\n"
+                "PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def(\"forward\", &forward); }\n"
+            ),
+            current_best_source="deterministic_speedup_middle_route",
+            llm_revision_history=[
+                {
+                    "iteration": 5,
+                    "candidate_id": "aten_out_addmm_bt_view-v05",
+                    "generation_context": {"revision_source_preference": "current_best_correct_candidate"},
+                },
+            ],
+        )
+        generator = LoraCandidateGenerator(llm_client=mock_llm)
+        candidate = generator.generate_candidate(
+            state=state,
+            feedback={"correctness": {"passed": True, "rel_l2_err": 0.0, "max_abs_err": 0.0}},
+        )
+        self.assertEqual(candidate.source, "deterministic_speedup_middle_route")
+        self.assertTrue(candidate.candidate_id.startswith("aten_inplace_addmm_bt_view-v"))
+        self.assertNotIn("bt_contiguous", candidate.candidate_id)
+        mock_llm.complete_json.assert_not_called()
+
     def test_generate_candidate_stops_forcing_rank16_speedup_family_after_repeated_failures(self) -> None:
         mock_llm = Mock()
         mock_llm.is_enabled.return_value = True

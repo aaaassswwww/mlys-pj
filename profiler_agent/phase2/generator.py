@@ -769,6 +769,69 @@ def _speedup_aten_search_space() -> list[dict[str, Any]]:
     ]
 
 
+def _infer_aten_bt_contiguous(*, candidate_id: str | None = None, source_code: str | None = None) -> bool | None:
+    if isinstance(candidate_id, str):
+        lowered = candidate_id.lower()
+        if "bt_contiguous" in lowered:
+            return True
+        if "bt_view" in lowered:
+            return False
+    if isinstance(source_code, str):
+        if "transpose(0, 1).contiguous()" in source_code:
+            return True
+        if "transpose(0, 1)" in source_code:
+            return False
+    return None
+
+
+def _infer_aten_addmm_mode(*, candidate_id: str | None = None, source_code: str | None = None) -> str | None:
+    if isinstance(candidate_id, str):
+        lowered = candidate_id.lower()
+        if "functional_addmm" in lowered:
+            return "functional"
+        if "out_addmm" in lowered:
+            return "out"
+        if "inplace_addmm" in lowered:
+            return "inplace"
+    if isinstance(source_code, str):
+        if "torch::addmm(" in source_code:
+            return "functional"
+        if "addmm_out" in source_code:
+            return "out"
+        if "addmm_(" in source_code:
+            return "inplace"
+    return None
+
+
+def _focused_speedup_aten_search_space(state: Phase2OptimizerState) -> list[dict[str, Any]]:
+    bt_contiguous = _infer_aten_bt_contiguous(
+        candidate_id=state.current_best_correct_candidate_id,
+        source_code=state.current_best_source_code,
+    )
+    addmm_mode = _infer_aten_addmm_mode(
+        candidate_id=state.current_best_correct_candidate_id,
+        source_code=state.current_best_source_code,
+    )
+    if bt_contiguous is None or addmm_mode is None:
+        return _speedup_aten_search_space()
+
+    if addmm_mode == "out":
+        modes = ["inplace", "functional"]
+    elif addmm_mode == "inplace":
+        modes = ["out", "functional"]
+    else:
+        modes = ["out", "inplace"]
+
+    return [
+        {
+            "name": f"aten_{mode}_addmm_{'bt_contiguous' if bt_contiguous else 'bt_view'}",
+            "bt_contiguous": bt_contiguous,
+            "addmm_mode": mode,
+        }
+        for mode in modes
+    ]
+
+
 def _build_speedup_aten_candidate(*, state: Phase2OptimizerState, iteration: int) -> GeneratedCandidate:
     prior_speedup_candidates = [
         item
@@ -777,8 +840,15 @@ def _build_speedup_aten_candidate(*, state: Phase2OptimizerState, iteration: int
         and isinstance(item.get("candidate_id"), str)
         and (_is_aten_middle_route_candidate_signature(candidate_id=str(item.get("candidate_id"))))
     ]
-    configs = _speedup_aten_search_space()
-    config = configs[len(prior_speedup_candidates) % len(configs)]
+    configs = _focused_speedup_aten_search_space(state)
+    tried_names = {
+        _candidate_family(str(item.get("candidate_id")))
+        for item in prior_speedup_candidates
+        if isinstance(item, dict) and isinstance(item.get("candidate_id"), str)
+    }
+    config = next((item for item in configs if item["name"] not in tried_names), None)
+    if config is None:
+        config = configs[len(prior_speedup_candidates) % len(configs)]
     candidate_id = f"{config['name']}-v{iteration:02d}"
     return GeneratedCandidate(
         candidate_id=candidate_id,
