@@ -91,7 +91,15 @@ class Phase2GeneratorTests(unittest.TestCase):
         self.assertEqual(candidate.source, "deterministic_speedup_middle_route")
         self.assertTrue(candidate.candidate_id.startswith("aten_inplace_addmm_bt_view-v"))
         self.assertNotIn("bt_contiguous", candidate.candidate_id)
+        self.assertNotIn("functional_addmm", candidate.candidate_id)
         mock_llm.complete_json.assert_not_called()
+
+    def test_bootstrap_aten_template_avoids_extra_copy_for_inplace_path(self) -> None:
+        generator = LoraCandidateGenerator(llm_client=None)
+        candidate = generator.bootstrap_candidate()
+        self.assertNotIn("copy_(", candidate.source_code)
+        self.assertNotIn("auto Y_t = torch::empty", candidate.source_code)
+        self.assertIn("return out;", candidate.source_code)
 
     def test_generate_candidate_stops_forcing_rank16_speedup_family_after_repeated_failures(self) -> None:
         mock_llm = Mock()

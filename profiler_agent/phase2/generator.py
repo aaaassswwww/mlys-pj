@@ -295,20 +295,21 @@ def build_reference_safe_aten_source(
     bt_expr = "B_t.transpose(0, 1).contiguous()" if bt_contiguous else "B_t.transpose(0, 1)"
     if addmm_mode == "out":
         addmm_block = (
+            "    auto Y_t = torch::empty({W_t.size(0), X_t.size(1)}, W_t.options());\n"
             "    auto wx = torch::matmul(W_t, X_t);\n"
             "    at::addmm_out(Y_t, wx, A_t, temp, 1.0, 1.0);\n"
+            "    return Y_t;\n"
         )
     elif addmm_mode == "functional":
         addmm_block = (
             "    auto wx = torch::matmul(W_t, X_t);\n"
-            "    auto out = torch::addmm(wx, A_t, temp, 1.0, 1.0);\n"
-            "    Y_t.copy_(out);\n"
+            "    return torch::addmm(wx, A_t, temp, 1.0, 1.0);\n"
         )
     else:
         addmm_block = (
             "    auto out = torch::matmul(W_t, X_t);\n"
             "    out.addmm_(A_t, temp, 1.0, 1.0);\n"
-            "    Y_t.copy_(out);\n"
+            "    return out;\n"
         )
     return (
         "#include <torch/extension.h>\n"
@@ -337,10 +338,8 @@ def build_reference_safe_aten_source(
         "    auto X_t = X.contiguous();\n"
         "    auto A_t = A.contiguous();\n"
         "    auto B_t = B.contiguous();\n"
-        "    auto Y_t = torch::empty({W_t.size(0), X_t.size(1)}, W_t.options());\n"
         f"    auto temp = torch::matmul({bt_expr}, X_t);\n"
         f"{addmm_block}"
-        "    return Y_t;\n"
         "}\n"
         "\n"
         "PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {\n"
@@ -816,9 +815,9 @@ def _focused_speedup_aten_search_space(state: Phase2OptimizerState) -> list[dict
         return _speedup_aten_search_space()
 
     if addmm_mode == "out":
-        modes = ["inplace", "functional"]
+        modes = ["inplace"]
     elif addmm_mode == "inplace":
-        modes = ["out", "functional"]
+        modes = ["out"]
     else:
         modes = ["out", "inplace"]
 
