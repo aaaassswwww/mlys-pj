@@ -13,6 +13,7 @@ from profiler_agent.multi_agent.models import AgentMessage, ExecutionPlan, Execu
 from profiler_agent.orchestrator.pipeline import PipelineOutput
 from profiler_agent.phase2.optimizer import Phase2OptimizationResult
 from profiler_agent.phase2.models import Phase2OptimizerState
+from profiler_agent.phase3.optimizer import Phase3OptimizationResult
 from profiler_agent.schema.target_spec_schema import TargetSpec
 from profiler_agent.tool_adapters.binary_runner import RunResult
 
@@ -25,6 +26,7 @@ class MainModeTests(unittest.TestCase):
             args = parse_args()
 
         self.assertEqual(args.phase2_iterations, 0)
+        self.assertEqual(args.phase3_iterations, 0)
 
     @patch("profiler_agent.main.execute")
     @patch("profiler_agent.main.initialize_runtime_budget")
@@ -244,6 +246,49 @@ class MainModeTests(unittest.TestCase):
                 root_dir=out_dir,
                 max_iterations=2,
                 llm_client=llm_client,
+            )
+            mock_load_spec.assert_not_called()
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    @patch("profiler_agent.main.run_default_phase3_workflow")
+    @patch("profiler_agent.main.load_target_spec")
+    @patch("profiler_agent.main.parse_args")
+    def test_phase3_mode_uses_phase3_workflow_without_loading_spec(
+        self,
+        mock_parse_args: unittest.mock.Mock,
+        mock_load_spec: unittest.mock.Mock,
+        mock_phase3_workflow: unittest.mock.Mock,
+    ) -> None:
+        out_dir = Path("tests/.tmp") / f"main_phase3_{uuid4().hex}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            engine_path = out_dir / "engine.py"
+            mock_parse_args.return_value = argparse.Namespace(
+                spec=Path("inputs/target_spec.json"),
+                out=out_dir,
+                mode="phase3",
+                objective="",
+                phase2_iterations=0,
+                phase3_iterations=4,
+                llm_secret_file=None,
+                llm_base_url="",
+                llm_model="",
+            )
+            mock_phase3_workflow.return_value = Phase3OptimizationResult(
+                best_candidate_id="runtime-1",
+                best_speedup=1.5,
+                iterations_run=4,
+                engine_path=engine_path,
+                state=None,  # type: ignore[arg-type]
+            )
+
+            rc = main()
+            self.assertEqual(rc, 0)
+            mock_phase3_workflow.assert_called_once_with(
+                root_dir=out_dir,
+                max_iterations=4,
+                llm_client=None,
             )
             mock_load_spec.assert_not_called()
         finally:

@@ -10,6 +10,7 @@ from profiler_agent.multi_agent import MultiAgentCoordinator, MultiAgentRequest
 from profiler_agent.multi_agent.llm_client import OpenAICompatibleLLMClient
 from profiler_agent.orchestrator.pipeline import execute
 from profiler_agent.phase2.workflow import run_default_phase2_workflow
+from profiler_agent.phase3.workflow import run_default_phase3_workflow
 from profiler_agent.runtime_budget import initialize_runtime_budget
 
 
@@ -20,9 +21,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["single", "multi", "phase2"],
+        choices=["single", "multi", "phase2", "phase3"],
         default="single",
-        help="execution mode: single pipeline, multi-agent coordinator, or phase2 LoRA optimizer",
+        help="execution mode: single pipeline, multi-agent coordinator, phase2 LoRA optimizer, or phase3 runtime optimizer",
     )
     parser.add_argument(
         "--objective",
@@ -35,6 +36,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="maximum optimization iterations for phase2 workflow; default 0 (time-budget driven)",
+    )
+    parser.add_argument(
+        "--phase3-iterations",
+        type=int,
+        default=0,
+        help="maximum optimization iterations for phase3 workflow; default 0 (time-budget driven)",
     )
     parser.add_argument(
         "--llm-secret-file",
@@ -90,6 +97,27 @@ def main() -> int:
         print(f"optimized_lora.cu: {result.optimized_lora_path or (args.out / 'optimized_lora.cu')}")
         print(f"phase2_state.json: {args.out / '.agent_artifacts' / 'phase2_state.json'}")
         print(f"phase2_report.json: {args.out / '.agent_artifacts' / 'phase2_report.json'}")
+        return 0
+
+    if args.mode == "phase3":
+        llm_secret_file = getattr(args, "llm_secret_file", None)
+        llm_base_url = getattr(args, "llm_base_url", "")
+        llm_model = getattr(args, "llm_model", "")
+        llm_client = None
+        if llm_secret_file is not None:
+            llm_client = OpenAICompatibleLLMClient.from_secret_file(
+                llm_secret_file,
+                base_url=(llm_base_url or None),
+                model=(llm_model or None),
+            )
+        result = run_default_phase3_workflow(
+            root_dir=args.out,
+            max_iterations=(None if int(args.phase3_iterations) <= 0 else int(args.phase3_iterations)),
+            llm_client=llm_client,
+        )
+        print(f"engine.py: {result.engine_path or (args.out / 'engine.py')}")
+        print(f"phase3_state.json: {args.out / '.agent_artifacts' / 'phase3_state.json'}")
+        print(f"phase3_report.json: {args.out / '.agent_artifacts' / 'phase3_report.json'}")
         return 0
 
     spec = load_target_spec(args.spec)
